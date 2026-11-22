@@ -37,7 +37,6 @@ static STEMMER: LazyLock<Stemmer> = LazyLock::new(|| Stemmer::create(Algorithm::
 static VECTOR_EXTENSION: OnceLock<i32> = OnceLock::new();
 
 const SCHEMA: &str = "
-    BEGIN;
     CREATE TABLE IF NOT EXISTS headers (
         id TEXT PRIMARY KEY,
         stamp TEXT NOT NULL,
@@ -58,7 +57,6 @@ const SCHEMA: &str = "
     CREATE VIRTUAL TABLE IF NOT EXISTS semantic USING vec0(embedding float[384] distance_metric=cosine);
     INSERT INTO lexical(lexical,rank) VALUES('secure-delete',1);
     PRAGMA user_version=1;
-    COMMIT;
 ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -404,6 +402,12 @@ impl SearchIndex {
         let path = directory.join(format!("{}-v1.sqlite3", io::hash(io::directory_key(root))));
         register_vector_extension()?;
         match Self::open_path(&path) {
+            Ok(mut index) => {
+                if rebuild {
+                    Self::initialize_schema(&mut index.connection, true)?;
+                }
+                Ok(index)
+            }
             Err(error) if rebuild && io::file(&path)? => {
                 for suffix in ["-journal", "-wal", "-shm", ""] {
                     let file = path.with_file_name(format!(
@@ -430,7 +434,7 @@ impl SearchIndex {
                 Err(error) => return Err(io::err(error)),
             }
         }
-        let connection = Connection::open_with_flags(
+        let mut connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
@@ -445,9 +449,19 @@ impl SearchIndex {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))
             .map_err(database_error)?;
         if schema_version == 0 {
-            connection.execute_batch(SCHEMA).map_err(database_error)?;
+            Self::initialize_schema(&mut connection, false)?;
         }
         Ok(Self { connection })
+    }
+
+    fn initialize_schema(connection: &mut Connection, rebuild: bool) -> Result<()> {
+        let transaction = connection.transaction().map_err(database_error)?;
+        if rebuild {
+            transaction.execute_batch("DROP TABLE IF EXISTS semantic; DROP TABLE IF EXISTS lexical; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS headers;")
+                .map_err(database_error)?;
+        }
+        transaction.execute_batch(SCHEMA).map_err(database_error)?;
+        transaction.commit().map_err(database_error)
     }
 
     fn refresh(
@@ -466,10 +480,6 @@ impl SearchIndex {
         }
 
         let transaction = self.connection.transaction().map_err(database_error)?;
-        if mode == Refresh::Rebuild {
-            transaction.execute_batch("DELETE FROM semantic; DELETE FROM lexical; DELETE FROM documents; DELETE FROM headers;")
-                .map_err(database_error)?;
-        }
         let full = mode != Refresh::Incremental;
         let mut headers = indexed_headers(&transaction)?;
         let (approvals, hidden) = store.record_statuses_with(root, records, |path, id| {
@@ -478,7 +488,11 @@ impl SearchIndex {
             };
             if !full {
                 if let Some(header) = headers.get(id).filter(|header| &header.stamp == stamp) {
-                    return serde_json::from_str(&header.approval).map_err(io::err);
+                    if let Some(approval) =
+                        serde_json::from_str(&header.approval).map_err(io::err)?
+                    {
+                        return Ok(Some(approval));
+                    }
                 }
             }
             let approval = store::record_inline_status(path, id)?;

@@ -177,9 +177,24 @@ fn invalid_file_contents(error: &str) -> bool {
         "Memory file is too large" | "Invalid encoding in memory file"
     )
 }
-fn record_metadata(path: &Path, id: &str) -> Result<Option<Fields>> {
+fn record_metadata(path: &Path, id: &str, require_owned_header: bool) -> Result<Option<Fields>> {
     match io::read(path) {
-        Ok(raw) => Ok(raw.and_then(|s| fmt::parse(&s, id, MEMORY, false).ok())),
+        Ok(Some(raw)) => match fmt::parse(&raw, id, MEMORY, false) {
+            Ok(fields) => Ok(Some(fields)),
+            Err(error)
+                if require_owned_header
+                    && raw.strip_prefix("---\n").is_some_and(|metadata| {
+                        metadata
+                            .lines()
+                            .take_while(|line| *line != "---")
+                            .any(|line| line == MEMORY)
+                    }) =>
+            {
+                Err(error)
+            }
+            Err(_) => Ok(None),
+        },
+        Ok(None) => Ok(None),
         Err(e) if invalid_file_contents(&e) => io::prefix(path, 32768)?
             .and_then(|bytes| fmt::parse_record_header(&bytes, id))
             .map(Some)
@@ -188,11 +203,11 @@ fn record_metadata(path: &Path, id: &str) -> Result<Option<Fields>> {
     }
 }
 pub(crate) fn record_inline_status(path: &Path, id: &str) -> Result<Option<Fields>> {
-    record_metadata(path, id).map(|fields| fields.and_then(|fields| fmt::inline(&fields)))
+    record_metadata(path, id, true).map(|fields| fields.and_then(|fields| fmt::inline(&fields)))
 }
 
 fn record_approval(path: &Path, id: &str) -> Result<Option<Fields>> {
-    match record_metadata(path, id) {
+    match record_metadata(path, id, false) {
         Ok(fields) => Ok(fields.and_then(|fields| fmt::inline(&fields))),
         Err(e) if invalid_file_contents(&e) => Ok(None),
         Err(e) => Err(e),
@@ -615,10 +630,15 @@ impl Store {
         let Some(path) = find_record(root, id)? else {
             return Ok(StoredRecord::Missing);
         };
-        let fields = match io::read(&path) {
-            Ok(Some(raw)) => fmt::parse(&raw, id, MEMORY, true),
+        let (fields, invalid_contents) = match io::read(&path) {
+            Ok(Some(raw)) => {
+                let fields = fmt::parse(&raw, id, MEMORY, true);
+                let invalid_contents =
+                    fields.is_err() && fmt::parse(&raw, id, MEMORY, false).is_ok();
+                (fields, invalid_contents)
+            }
             Ok(None) => return Ok(StoredRecord::Missing),
-            Err(e) if invalid_file_contents(&e) => Err(e),
+            Err(e) if invalid_file_contents(&e) => (Err(e), true),
             Err(e) => return Err(e),
         };
         if forgotten(root, id)? {
@@ -626,11 +646,7 @@ impl Store {
         }
         match fields {
             Ok(fields) => Ok(StoredRecord::Loaded(fmt::public(fields, approval))),
-            Err(error)
-                if invalid_file_contents(&error) || error == "Invalid memory text length" =>
-            {
-                Ok(StoredRecord::Invalid(error))
-            }
+            Err(error) if invalid_contents => Ok(StoredRecord::Invalid(error)),
             Err(error) => Err(error),
         }
     }

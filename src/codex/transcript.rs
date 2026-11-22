@@ -32,6 +32,12 @@ pub(super) struct Turn {
     pub parent_session: Option<String>,
 }
 
+pub(super) struct CancellationAncestry {
+    pub parent_session: String,
+    pub parent_turn: String,
+    pub root_turn: String,
+}
+
 struct Transcript {
     header: Value,
     tail: String,
@@ -316,6 +322,63 @@ pub(super) fn child_of(profile: &Path, payload: &Value, actor: &str, session: &s
         .as_ref()
         .and_then(parent_session)
         == Some(session)
+}
+
+pub(super) fn cancellation_ancestry(
+    profile: &Path,
+    payload: &Value,
+    cwd: &Path,
+    actor: &str,
+    root_session: &str,
+    turn: &str,
+) -> Option<CancellationAncestry> {
+    let local = hook_transcript(profile, payload, actor)?;
+    let parent = parent_session(&local)?;
+    if parent == actor {
+        return None;
+    }
+    let mut ancestry = None;
+    let mut context_seen = false;
+    for line in local.tail.lines().filter(|line| {
+        ["\"task_started\"", "\"turn_started\"", "\"turn_context\""]
+            .iter()
+            .any(|kind| line.contains(kind))
+    }) {
+        let row = read_json(line.as_bytes(), line.len()).ok()?;
+        let data = &row["payload"];
+        if data["turn_id"] != turn {
+            continue;
+        }
+        match (row["type"].as_str(), data["type"].as_str()) {
+            (Some("event_msg"), Some("task_started" | "turn_started")) => {
+                let attribution = &data["turn_attribution"];
+                let parent_turn = &attribution["parent_turn_id"];
+                let root_turn = &attribution["root_turn_id"];
+                if attribution["turn_id"] != turn
+                    || !turn_id(parent_turn)
+                    || !turn_id(root_turn)
+                    || data["root_turn_id"] != *root_turn
+                    || (parent == root_session) != (parent_turn == root_turn)
+                {
+                    return None;
+                }
+                ancestry = Some(CancellationAncestry {
+                    parent_session: parent.to_owned(),
+                    parent_turn: parent_turn.as_str()?.to_owned(),
+                    root_turn: root_turn.as_str()?.to_owned(),
+                });
+                context_seen = false;
+            }
+            (Some("turn_context"), _) if ancestry.is_some() => {
+                if !io::same_directory(Path::new(data["cwd"].as_str()?), cwd) {
+                    return None;
+                }
+                context_seen = true;
+            }
+            _ => {}
+        }
+    }
+    context_seen.then_some(ancestry?)
 }
 
 pub(super) fn cancelled(profile: &Path, payload: &Value, session: &str, turn: &str) -> bool {

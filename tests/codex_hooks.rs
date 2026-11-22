@@ -539,6 +539,133 @@ fn nested_child_keeps_root_session_and_uses_the_immediate_parent_rollout() {
 }
 
 #[test]
+fn nested_interrupt_closes_only_its_capture() {
+    for (aborted, cancel_ancestors) in [(false, false), (true, false), (true, true)] {
+        let f = Fixture::new();
+        let root = "00000000-0000-7000-8000-000000000101";
+        let root_turn = "00000000-0000-7000-8000-000000000102";
+        let parent = "00000000-0000-7000-8000-000000000103";
+        let parent_turn = "00000000-0000-7000-8000-000000000104";
+        let child = "00000000-0000-7000-8000-000000000105";
+        let child_turn = "00000000-0000-7000-8000-000000000106";
+        let sibling = "00000000-0000-7000-8000-000000000107";
+        let sibling_turn = "00000000-0000-7000-8000-000000000108";
+        let other = "00000000-0000-7000-8000-000000000109";
+        let other_turn = "00000000-0000-7000-8000-000000000110";
+        let root_path = f.transcript(root, json!({"id":root,"source":"vscode"}));
+        let parent_path = f.transcript(
+            parent,
+            json!({"id":parent,"source":{
+                "subagent":{"thread_spawn":{"parent_thread_id":root,"depth":1}}
+            }}),
+        );
+        let child_path = f.transcript(
+            child,
+            json!({"id":child,"source":{
+                "subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":2}}
+            }}),
+        );
+        let sibling_path = f.transcript(
+            sibling,
+            json!({"id":sibling,"source":{
+                "subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":2}}
+            }}),
+        );
+        let other_path = f.transcript(other, json!({"id":other,"source":"vscode"}));
+        for (session, turn, path) in [
+            (root, root_turn, &root_path),
+            (other, other_turn, &other_path),
+        ] {
+            f.timeline(path, turn, "default", None);
+            f.hook(
+                "UserPromptSubmit",
+                session,
+                turn,
+                json!({"transcript_path":path}),
+            );
+        }
+        for (actor, turn, path, ancestor_turn) in [
+            (parent, parent_turn, &parent_path, root_turn),
+            (child, child_turn, &child_path, parent_turn),
+            (sibling, sibling_turn, &sibling_path, parent_turn),
+        ] {
+            f.native_timeline(path, turn, "default", ancestor_turn, root_turn);
+            f.hook(
+                "UserPromptSubmit",
+                root,
+                turn,
+                json!({"transcript_path":path,"agent_id":actor,"agent_type":"worker"}),
+            );
+        }
+        let phases = || {
+            let database = rusqlite::Connection::open_with_flags(
+                f.state.join("codex-turns.sqlite3"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let mut statement = database
+                .prepare("SELECT session,turn_id,phase FROM turns ORDER BY session,turn_id")
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        let mut expected: Vec<_> = [
+            (root, root_turn),
+            (parent, parent_turn),
+            (child, child_turn),
+            (sibling, sibling_turn),
+            (other, other_turn),
+        ]
+        .into_iter()
+        .map(|(session, turn)| (session.to_owned(), turn.to_owned(), "capture".to_owned()))
+        .collect();
+        assert_eq!(phases(), expected);
+        if aborted {
+            let mut rollout = fs::OpenOptions::new()
+                .append(true)
+                .open(&child_path)
+                .unwrap();
+            writeln!(
+                rollout,
+                "{}",
+                json!({"type":"event_msg","payload":{"type":"turn_aborted","turn_id":child_turn}})
+            )
+            .unwrap();
+        }
+        if cancel_ancestors {
+            f.hook("Interrupt", root, root_turn, json!({}));
+            f.hook(
+                "Interrupt",
+                root,
+                parent_turn,
+                json!({"transcript_path":parent_path,"agent_id":parent,"agent_type":"worker"}),
+            );
+            expected[0].2 = "closed".to_owned();
+            expected[1].2 = "closed".to_owned();
+            assert_eq!(phases(), expected);
+        }
+        let interrupt =
+            json!({"transcript_path":child_path,"agent_id":child,"agent_type":"worker"});
+        assert_eq!(
+            f.hook("Interrupt", other, child_turn, interrupt.clone()),
+            json!({})
+        );
+        assert_eq!(phases(), expected);
+        assert_eq!(f.hook("Interrupt", root, child_turn, interrupt), json!({}));
+        expected[2].2 = "closed".to_owned();
+        assert_eq!(phases(), expected);
+    }
+}
+
+#[test]
 fn offline_vault_is_recovered_without_user_messages() {
     let f = Fixture::new();
     let hidden = f.vault.with_file_name("offline");

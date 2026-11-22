@@ -391,12 +391,23 @@ fn handle(
     let turn = identifier(&payload["turn_id"]);
     let key = turn.map(|turn| io::digest(&[actor, turn]));
     if event == Event::Interrupt {
-        if let Some(key) = key.as_deref().filter(|_| !read_only) {
+        if let (Some(key), Some(turn)) = (key.as_deref().filter(|_| !read_only), turn) {
             if !child
                 || profile
                     .is_some_and(|profile| transcript::child_of(profile, payload, actor, session))
             {
                 pending.cancel(key)?;
+            } else if let Some(ancestry) = profile.and_then(|profile| {
+                transcript::cancellation_ancestry(profile, payload, cwd, actor, session, turn)
+            }) {
+                if let Some(binding) = store.bound(cwd)? {
+                    pending.cancel_descendant(
+                        &scope_id(&binding, cwd),
+                        (actor, turn),
+                        (&ancestry.parent_session, &ancestry.parent_turn),
+                        (session, &ancestry.root_turn),
+                    )?;
+                }
             }
         }
         return Ok(ignored);

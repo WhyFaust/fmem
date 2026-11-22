@@ -728,7 +728,7 @@ fn draft_noise_and_large_views_do_not_block_approved_status() {
 }
 
 #[test]
-fn search_and_recall_skip_invalid_record_bodies_without_reviving_predecessors() {
+fn search_and_recall_skip_invalid_record_contents_without_reviving_predecessors() {
     let f = Fixture::new("auto", "pilot");
     let first = f.save("Original convention for heliotrope", true);
     let mut correction = candidate("Correction for heliotrope");
@@ -744,12 +744,38 @@ fn search_and_recall_skip_invalid_record_bodies_without_reviving_predecessors() 
     let raw = fs::read(&path).unwrap();
     let draft_path = store::record(&f.root(), id(&broken_draft)).unwrap();
     let draft_raw = fs::read(&draft_path).unwrap();
-    for invalid_body in [vec![b'x'; 4001], vec![b'x'; 32768], vec![0xff]] {
-        let mut edited = raw.clone();
-        edited.extend(&invalid_body);
+    let mut invalid_contents: Vec<_> = [
+        vec![b'x'; 4001],
+        vec![b'x'; 32768],
+        vec![0xff],
+        b"\n```python\nprint(1)\n```\n".to_vec(),
+        b"\n<em>Optional detail</em>\n".to_vec(),
+        b"\napi_key=not-a-real-secret\n".to_vec(),
+        b"\nInvalid\x01characters\n".to_vec(),
+    ]
+    .into_iter()
+    .map(|body| {
+        (
+            [raw.as_slice(), body.as_slice()].concat(),
+            [draft_raw.as_slice(), body.as_slice()].concat(),
+        )
+    })
+    .collect();
+    for property in ["title: ", "kind: "] {
+        let without_property = |bytes: &[u8]| {
+            String::from_utf8_lossy(bytes)
+                .lines()
+                .filter(|line| !line.starts_with(property))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes()
+        };
+        invalid_contents.push((without_property(&raw), without_property(&draft_raw)));
+    }
+    for (edited, edited_draft) in invalid_contents {
+        fs::write(&path, &raw).unwrap();
+        assert_eq!(f.store.index(&f.binding, false, None).unwrap().active, 2);
         fs::write(&path, edited).unwrap();
-        let mut edited_draft = draft_raw.clone();
-        edited_draft.extend(invalid_body);
         fs::write(&draft_path, edited_draft).unwrap();
         assert_eq!(
             f.store.search(&f.binding, "heliotrope", 5).unwrap(),
@@ -763,7 +789,29 @@ fn search_and_recall_skip_invalid_record_bodies_without_reviving_predecessors() 
         assert!(f.store.get(&f.binding, id(&first)).is_err());
         assert!(f.store.get(&f.binding, id(&second)).is_err());
         assert_eq!(f.store.inbox(&f.binding).unwrap(), json!([good_draft]));
+        assert_eq!(f.store.index(&f.binding, true, None).unwrap().active, 1);
+        let compact = f
+            .store
+            .search_compact(
+                &f.binding,
+                "heliotrope",
+                5,
+                fmem::search::SearchMode::Lexical,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(compact.hits.len(), 1);
+        assert_eq!(compact.hits[0].id, id(&other));
     }
+    let invalid_relationship = String::from_utf8(raw)
+        .unwrap()
+        .replace(id(&first), "invalid-predecessor");
+    fs::write(&path, invalid_relationship).unwrap();
+    assert!(f.store.search(&f.binding, "heliotrope", 5).is_err());
+    assert!(f.store.recall(&f.binding, "heliotrope", 5).is_err());
+    f.store.forget(&f.binding, id(&second)).unwrap();
+    assert!(!path.exists());
 }
 
 #[test]

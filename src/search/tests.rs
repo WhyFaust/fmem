@@ -101,6 +101,134 @@ fn persistent_search_follows_external_edit_deletion_and_rebuild() {
 }
 
 #[test]
+fn missing_cached_approval_rechecks_record_header() {
+    let (_temporary, store, binding) = fixture();
+    let predecessor = save(
+        &store,
+        &binding,
+        "Original process",
+        "Use the original narwhal protocol.",
+        "decision",
+    );
+    let successor = store
+        .save(
+            &binding,
+            &json!({
+                "kind":"correction", "title":"Current process",
+                "body":"Use the current narwhal protocol.", "supersedes":predecessor
+            }),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+    let id = successor["id"].as_str().unwrap();
+    assert_eq!(compact(&store, &binding, "narwhal")[0].id, id);
+    let root = store.root(&binding).unwrap();
+    let path = store::record(&root, id).unwrap();
+    let raw = fs::read_to_string(&path).unwrap();
+    fs::write(&path, raw.replace(&predecessor, "invalid-predecessor")).unwrap();
+    let index =
+        SearchIndex::open(&store.state, &root, binding.root.parent().unwrap(), false).unwrap();
+    assert_eq!(
+        index
+            .connection
+            .execute(
+                "UPDATE headers SET approval='null', stamp=? WHERE id=?",
+                params![fingerprint(&path).unwrap().unwrap(), id],
+            )
+            .unwrap(),
+        1
+    );
+
+    assert!(store.search(&binding, "narwhal", 5).is_err());
+    assert!(store.recall(&binding, "narwhal", 5).is_err());
+}
+
+#[test]
+fn rebuild_recovers_missing_index_tables_without_changing_notes_or_receipts() {
+    let (_temporary, store, binding) = fixture();
+    let request = json!({"operations":[{
+        "operation_id":"rebuild-preserves-receipt", "action":"remember",
+        "candidate":{"kind":"decision","title":"Independent narwhal","body":"Keep the narwhal protocol."}
+    }]});
+    let committed = crate::operations::commit(&store, &binding, &request).unwrap();
+    let receipt = committed["receipts"][0].clone();
+    assert_eq!(receipt["status"], "persisted");
+    let id = receipt["record_id"].as_str().unwrap();
+    let note = store::record(&store.root(&binding).unwrap(), id).unwrap();
+    let original_note = fs::read(&note).unwrap();
+    let journal = store.state.join("operations.sqlite3");
+    let original_journal = fs::read(&journal).unwrap();
+    assert_eq!(compact(&store, &binding, "narwhal")[0].id, id);
+    let database = fs::read_dir(store.state.join("indexes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let open = Connection::open(&database).unwrap();
+    open.execute_batch("DROP TABLE documents;").unwrap();
+    assert!(store.search(&binding, "narwhal", 5).is_err());
+
+    let report = store.index(&binding, true, None).unwrap();
+
+    assert_eq!((report.active, report.updated, report.pending), (1, 1, 1));
+    let hits = compact(&store, &binding, "narwhal");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, id);
+    assert_eq!(
+        open.query_row("SELECT id FROM documents", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        id
+    );
+    assert_eq!(fs::read(&note).unwrap(), original_note);
+    assert_eq!(fs::read(&journal).unwrap(), original_journal);
+    assert_eq!(
+        crate::operations::receipt(&store, &binding, "rebuild-preserves-receipt").unwrap(),
+        Some(receipt)
+    );
+}
+
+#[test]
+fn rebuild_refreshes_an_open_index_connection() {
+    let (_temporary, store, binding) = fixture();
+    let id = save(
+        &store,
+        &binding,
+        "Procedure",
+        "Old narwhal protocol.",
+        "decision",
+    );
+    store.index(&binding, false, None).unwrap();
+    let root = store.root(&binding).unwrap();
+    let open =
+        SearchIndex::open(&store.state, &root, binding.root.parent().unwrap(), false).unwrap();
+    assert_eq!(
+        open.lexical(&LexicalQuery::new("narwhal"), 5, None)
+            .unwrap()
+            .len(),
+        1
+    );
+    let path = store::record(&root, &id).unwrap();
+    let raw = fs::read_to_string(&path).unwrap();
+    fs::write(&path, raw.replace("narwhal", "tortoise")).unwrap();
+
+    assert_eq!(store.index(&binding, true, None).unwrap().active, 1);
+
+    assert!(open
+        .lexical(&LexicalQuery::new("narwhal"), 5, None)
+        .unwrap()
+        .is_empty());
+    let updated = open
+        .lexical(&LexicalQuery::new("tortoise"), 5, None)
+        .unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(open.document(updated[0].rowid).unwrap().1["id"], id);
+}
+
+#[test]
 fn search_filters_scope_and_kind_before_top_k_and_lists_active_preferences() {
     let (_temporary, store, binding) = fixture();
     for i in 0..7 {

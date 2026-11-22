@@ -244,6 +244,10 @@ impl Pending {
             return Ok(());
         }
         let _turn = self.lock_turn(key)?;
+        self.cancel_locked(key)
+    }
+
+    fn cancel_locked(&self, key: &str) -> Result<()> {
         if self.invalidate_locked(key)?.is_none() {
             return Ok(());
         }
@@ -321,6 +325,54 @@ impl Pending {
             .is_some_and(
                 |(verified, delegated_grant)| if delegated { delegated_grant } else { verified },
             ))
+    }
+
+    pub fn cancel_descendant(
+        &self,
+        scope: &str,
+        actor: (&str, &str),
+        parent: (&str, &str),
+        root: (&str, &str),
+    ) -> Result<()> {
+        let key = io::digest(&[actor.0, actor.1]);
+        if self.generation(&key)?.is_none() {
+            return Ok(());
+        }
+        let _turn = self.lock_turn(&key)?;
+        let belongs = {
+            let Some(conn) = self.connection(false, true)? else {
+                return Ok(());
+            };
+            conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM turns AS child
+                    JOIN turns AS parent ON parent.scope=child.scope
+                    JOIN turns AS root ON root.scope=child.scope
+                    WHERE child.key=?1 AND child.scope=?2 AND child.session=?3 AND child.turn_id=?4
+                    AND child.delegated=1
+                    AND parent.key=?5 AND parent.session=?6 AND parent.turn_id=?7 AND parent.delegated=1
+                    AND root.key=?8 AND root.session=?9 AND root.turn_id=?10 AND root.verified=1
+                )",
+                params![
+                    key,
+                    scope,
+                    actor.0,
+                    actor.1,
+                    io::digest(&[parent.0, parent.1]),
+                    parent.0,
+                    parent.1,
+                    io::digest(&[root.0, root.1]),
+                    root.0,
+                    root.1,
+                ],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(io::err)?
+        };
+        if belongs {
+            self.cancel_locked(&key)?;
+        }
+        Ok(())
     }
 
     pub fn grant_flags(
