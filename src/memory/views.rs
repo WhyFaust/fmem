@@ -139,7 +139,7 @@ mod tests {
         let source = asset("Home.md").unwrap();
         assert!(marker(Some(source), "fstack_memory_home: 1"));
         assert!(marker(
-            Some(&source.replace('\n', "\r\n")),
+            Some(&source.replace("\r\n", "\n").replace('\n', "\r\n")),
             "fstack_memory_home: 1"
         ));
         assert!(!marker(
