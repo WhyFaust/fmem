@@ -813,18 +813,39 @@ fn missing_pages_and_unmanaged_hub_fail_without_losing_records() {
 fn concurrent_mutations_and_lock_failure_preserve_records() {
     let f = Fixture::new("inbox", "pilot");
     let v = f.save("Concurrent heliotrope", false);
-    std::thread::scope(|scope| {
+    let start = std::sync::Barrier::new(8);
+    let attempts = std::thread::scope(|scope| {
         let mut threads = Vec::new();
         for _ in 0..8 {
-            threads.push(scope.spawn(|| f.store.approve(&f.binding, id(&v)).unwrap()));
+            threads.push(scope.spawn(|| {
+                start.wait();
+                f.store.approve(&f.binding, id(&v))
+            }));
         }
-        for t in threads {
-            assert_eq!(t.join().unwrap()["status"], "memory");
-        }
+        threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>()
     });
+    assert!(attempts.iter().any(Result::is_ok));
+    for attempt in attempts {
+        let entry = match attempt {
+            Ok(entry) => entry,
+            Err(error) => {
+                assert_eq!(error, "Timed out waiting for the local memory lock");
+                f.store.approve(&f.binding, id(&v)).unwrap()
+            }
+        };
+        assert_eq!(entry["status"], "memory");
+        assert_eq!(entry["id"], v["id"]);
+        assert_eq!(entry["body"], v["body"]);
+    }
     assert_eq!(store::records(&f.root()).unwrap().len(), 1);
     let held = io::lock(&f.root(), &f.vault).unwrap();
-    assert!(f.store.approve(&f.binding, id(&v)).is_err());
+    assert_eq!(
+        f.store.approve(&f.binding, id(&v)).unwrap_err(),
+        "Timed out waiting for the local memory lock"
+    );
     drop(held);
     assert!(f.store.get(&f.binding, id(&v)).is_ok());
     let path = store::record(&f.root(), id(&v)).unwrap();

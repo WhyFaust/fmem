@@ -141,8 +141,13 @@ fn validate_database_file(path: &Path) -> Result<bool> {
         }
     }
     #[cfg(windows)]
-    if io::windows_info(path, false)?.2 != 1 {
-        return Err("Unsafe memory operations database file".into());
+    {
+        let Some((_, _, links)) = io::windows_info_if_present(path, false)? else {
+            return Ok(false);
+        };
+        if links != 1 {
+            return Err("Unsafe memory operations database file".into());
+        }
     }
     Ok(true)
 }

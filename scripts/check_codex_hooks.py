@@ -428,8 +428,14 @@ def run_turn(server: AppServer, provider: ResponsesProvider, scenario: Scenario,
                     require(not scenario.errors, f"Ошибка локального провайдера: {scenario.errors}")
                     require(status == ("interrupted" if interrupted else "completed"),
                             f"Неожиданное завершение хода: {status}, {turn.get('error')}, {errors}")
-                    require(len(scenario.requests) == len(scenario.steps),
-                            f"Провайдер получил {len(scenario.requests)} запросов вместо {len(scenario.steps)}")
+                    if len(scenario.requests) != len(scenario.steps):
+                        summary = [{key: run.get(key) for key in (
+                            "eventName", "executionMode", "status", "durationMs",
+                        )} for run in hooks]
+                        raise RuntimeError(
+                            f"Провайдер получил {len(scenario.requests)} запросов вместо {len(scenario.steps)}; "
+                            f"mode={mode}, hooks={summary}"
+                        )
                     require(bool(scenario.requests) and prompt in model_inputs(scenario.requests[0]),
                             "Провайдер не получил тестовое сообщение")
                     return Turn(thread, id, hooks, items)
