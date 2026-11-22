@@ -24,10 +24,21 @@ pub fn asset(name: &str) -> Result<&'static str> {
     }
 }
 pub fn marker(text: Option<&str>, marker: &str) -> bool {
-    text.and_then(|s| s.strip_prefix("---\n"))
-        .and_then(|s| s.split_once("\n---\n"))
-        .is_some_and(|(meta, _)| meta.lines().any(|s| s == marker))
+    let Some(text) = text else { return false };
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return false;
+    }
+    let mut found = false;
+    for line in lines {
+        if line == "---" {
+            return found;
+        }
+        found |= line == marker;
+    }
+    false
 }
+
 pub fn project_page(root: &Path) -> PathBuf {
     let name = root.file_name().unwrap().to_string_lossy();
     root.join(format!(
@@ -117,4 +128,27 @@ pub fn ensure_library(root: &Path) -> Result<()> {
         io::write(&destination, asset("Library.base")?, false, None)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_marker_accepts_windows_line_endings_and_requires_frontmatter() {
+        let source = asset("Home.md").unwrap();
+        assert!(marker(Some(source), "fstack_memory_home: 1"));
+        assert!(marker(
+            Some(&source.replace('\n', "\r\n")),
+            "fstack_memory_home: 1"
+        ));
+        assert!(!marker(
+            Some("---\r\nfstack_memory_home: 1\r\n"),
+            "fstack_memory_home: 1"
+        ));
+        assert!(!marker(
+            Some("text\n---\nfstack_memory_home: 1\n---\n"),
+            "fstack_memory_home: 1"
+        ));
+    }
 }

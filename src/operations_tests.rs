@@ -240,6 +240,76 @@ fn detects_record_changes_before_resuming_approval() {
 }
 
 #[test]
+fn refuses_to_approve_a_draft_edited_during_application() {
+    let (_temp, store, binding) = fixture();
+    let mut draft = remember("draft");
+    draft["action"] = json!("draft");
+    let saved = one(&store, &binding, draft);
+    let id = saved["record_id"].as_str().unwrap();
+    let path = record(&store.root(&binding).unwrap(), id);
+    let changed = fs::read_to_string(&path)
+        .unwrap()
+        .replace("Check fixture", "Wait for sign-off");
+    let item = json!({"operation_id": "approve", "action": "approve", "id": id});
+    let (journal, operation) = start(&store, &binding, &item);
+    let result = apply(
+        &store,
+        &binding,
+        &operation.action,
+        Some(id),
+        None,
+        (None, None),
+        |version| {
+            journal.expect(&operation.id, version)?;
+            fs::write(&path, &changed).unwrap();
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        classify(&result.unwrap_err()),
+        ("conflict", "record_changed")
+    );
+    assert_eq!(fs::read_to_string(path).unwrap(), changed);
+    assert!(store.get(&binding, id).is_err());
+}
+
+#[test]
+fn refuses_to_forget_a_record_edited_during_application() {
+    let (_temp, store, binding) = fixture();
+    let saved = one(&store, &binding, remember("save"));
+    let id = saved["record_id"].as_str().unwrap();
+    let root = store.root(&binding).unwrap();
+    let path = record(&root, id);
+    let changed = fs::read_to_string(&path)
+        .unwrap()
+        .replace("Check fixture", "Wait for sign-off");
+    let item = json!({"operation_id": "forget", "action": "forget", "id": id});
+    let (journal, operation) = start(&store, &binding, &item);
+    let result = apply(
+        &store,
+        &binding,
+        &operation.action,
+        Some(id),
+        None,
+        (None, None),
+        |version| {
+            journal.expect(&operation.id, version)?;
+            fs::write(&path, &changed).unwrap();
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        classify(&result.unwrap_err()),
+        ("conflict", "record_changed")
+    );
+    assert!(!verified_forgotten(&root, id).unwrap());
+    assert_eq!(fs::read_to_string(path).unwrap(), changed);
+    assert!(store.get(&binding, id).is_ok());
+}
+
+#[test]
 fn completes_a_removal_interrupted_after_renaming_the_note() {
     let (_temp, store, binding) = fixture();
     let saved = one(&store, &binding, remember("first"));

@@ -1,7 +1,7 @@
 use crate::{
     memory::{
         format, io, shared,
-        store::{captured, legacy, note, record, verified_forgotten},
+        store::{captured, legacy, record, verified_forgotten, ForgetSnapshot},
         Binding, Store, WriteOutcome,
     },
     protocol, Result,
@@ -574,18 +574,28 @@ fn apply(
         return Err("Memory entry was forgotten".into());
     }
     let path = record(&root, id);
-    let mut fields = note(&path, id, format::MEMORY, true)?;
-    if forgotten && fields.is_none() {
-        fields = note(&captured(&root, id), id, format::MEMORY, true)?;
+    let raw = io::read(&path)?;
+    let capture = if verb == "forget" {
+        io::read(&captured(&root, id))?
+    } else {
+        None
+    };
+    if capture.is_some() && (!forgotten || raw.is_some() && raw != capture) {
+        return Err("Memory note changed while preparing an update".into());
     }
-    let mut status = if let Some(fields) = &fields {
+    let fields = raw
+        .as_deref()
+        .or(capture.as_deref())
+        .map(|note| format::parse(note, id, format::MEMORY, true))
+        .transpose()?;
+    let mut status = if let Some(fields) = fields {
         let (approvals, hidden) = store.statuses(&root)?;
         if verb != "forget" && hidden.contains(id) {
             return Err("Memory entry is unavailable".into());
         }
-        let inline = format::inline(fields);
+        let inline = format::inline(&fields);
         Some(format::public(
-            fields.clone(),
+            fields,
             approvals.get(id).or(inline.as_ref()),
         ))
     } else {
@@ -630,34 +640,47 @@ fn apply(
             }
         }
         "approve" => {
+            let observed = raw.as_deref().ok_or("Inbox entry is unavailable")?;
             let mut record = status.take().ok_or("Inbox entry is unavailable")?;
             let approved =
                 record.as_object_mut().unwrap().remove("status") == Some(json!("memory"));
             verify_version(expected, &io::hash(record.to_string()), remember_version)?;
             if approved {
+                if io::read(&path)?.as_deref() != Some(observed) {
+                    return Err("Memory note changed while preparing an update".into());
+                }
                 io::sync_parent(&path)?;
                 record["status"] = json!("memory");
                 record
             } else {
-                write_result(store.approve_locked(&root, id)?)?
+                write_result(store.approve_locked(&root, id, Some(observed))?)?
             }
         }
         "forget" => {
+            let approval = io::read(&legacy(&root, "Approved", id))?;
             if let Some(record) = &status {
                 verify_version(expected, &io::hash(record.to_string()), remember_version)?;
             } else if !forgotten {
                 if binding.shared {
                     return Err("Memory entry is unavailable".into());
                 }
-                let old = note(&legacy(&root, "Approved", id), id, format::APPROVED, true)?
-                    .ok_or("Memory entry is unavailable")?;
+                let marker = approval.as_deref().ok_or("Memory entry is unavailable")?;
+                let old = format::parse(marker, id, format::APPROVED, true)?;
                 verify_version(
                     expected,
                     &io::hash(json!(old).to_string()),
                     remember_version,
                 )?;
             }
-            store.forget_locked(&root, id)?
+            store.forget_locked(
+                &root,
+                id,
+                Some(ForgetSnapshot {
+                    record: raw.as_deref(),
+                    captured: capture.as_deref(),
+                    approval_marker: approval.as_deref(),
+                }),
+            )?
         }
         _ => return Err("Invalid memory action".into()),
     };

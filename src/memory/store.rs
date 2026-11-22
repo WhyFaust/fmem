@@ -22,6 +22,33 @@ pub enum WriteOutcome {
     Written(Value),
     Forgotten,
 }
+pub(crate) struct ForgetSnapshot<'a> {
+    pub record: Option<&'a str>,
+    pub captured: Option<&'a str>,
+    pub approval_marker: Option<&'a str>,
+}
+impl ForgetSnapshot<'_> {
+    fn approval(&self, id: &str) -> Result<Option<Fields>> {
+        if let Some(raw) = self.approval_marker {
+            return fmt::parse(raw, id, APPROVED, true).map(Some);
+        }
+        let fields = self
+            .captured
+            .or(self.record)
+            .map(|raw| fmt::parse(raw, id, MEMORY, false))
+            .transpose()?;
+        Ok(fields.as_ref().and_then(fmt::inline))
+    }
+}
+const NOTE_CHANGED: &str = "Memory note changed while preparing an update";
+
+fn check_note_snapshot(observed: Option<&str>, expected: Option<&str>) -> Result<()> {
+    if observed != expected {
+        return Err(NOTE_CHANGED.into());
+    }
+    Ok(())
+}
+
 enum StoredRecord {
     Missing,
     Invalid(String),
@@ -815,7 +842,7 @@ impl Store {
                 None,
             )? {
                 if verified_forgotten(root, &id)? {
-                    self.forget_locked(root, &id)?;
+                    self.forget_locked(root, &id, None)?;
                     return Ok(WriteOutcome::Forgotten);
                 }
                 let approval = fmt::inline(&metadata);
@@ -830,7 +857,7 @@ impl Store {
             return Err("Memory record already exists".into());
         }
         if approved {
-            return self.approve_locked(root, &id);
+            return self.approve_locked(root, &id, None);
         }
         let (a, h) = self.statuses(root)?;
         if h.contains(&id) {
@@ -852,9 +879,14 @@ impl Store {
         let root = self.root(b)?;
         let _lock = io::lock(&root, b.root.parent().unwrap())?;
         let _ = views::ensure_library(&b.root);
-        self.approve_locked(&root, id)
+        self.approve_locked(&root, id, None)
     }
-    pub(crate) fn approve_locked(&self, root: &Path, id: &str) -> Result<WriteOutcome> {
+    pub(crate) fn approve_locked(
+        &self,
+        root: &Path,
+        id: &str,
+        expected: Option<&str>,
+    ) -> Result<WriteOutcome> {
         if verified_forgotten(root, id)? {
             return Ok(WriteOutcome::Forgotten);
         }
@@ -868,9 +900,15 @@ impl Store {
         if verified_forgotten(root, id)? {
             return Ok(WriteOutcome::Forgotten);
         }
+        if let Some(expected) = expected {
+            check_note_snapshot(raw.as_deref(), Some(expected))?;
+        }
         let raw = raw.ok_or("Inbox entry is unavailable")?;
         let fields = fmt::parse(&raw, id, MEMORY, true)?;
         let approval = match a.get(id) {
+            Some(a) if expected.is_some() && *a != fmt::approval(&fields) => {
+                return Err(NOTE_CHANGED.into());
+            }
             Some(a) => a.clone(),
             None => {
                 self.check_supersedes(root, &fields, &a, &h)?;
@@ -880,7 +918,10 @@ impl Store {
         let mut updates = graph(root, approval.get("supersedes"), Some(link));
         updates.insert("fstack_status".into(), Some("approved".into()));
         updates.insert("supersedes".into(), approval.get("supersedes").cloned());
-        update(&p, &raw, &fields, &updates)?;
+        let written = update(&p, &raw, &fields, &updates)?;
+        if expected.is_some() && !written && fmt::inline(&fields).is_none() {
+            return Err(NOTE_CHANGED.into());
+        }
         if verified_forgotten(root, id)? {
             return Ok(WriteOutcome::Forgotten);
         }
@@ -890,16 +931,26 @@ impl Store {
         fmt::id(id)?;
         let root = self.root(b)?;
         let _lock = io::lock(&root, b.root.parent().unwrap())?;
-        self.forget_locked(&root, id)
+        self.forget_locked(&root, id, None)
     }
-    fn finish_forget(&self, root: &Path, id: &str, approval: Option<&Fields>) -> Result<()> {
+    fn finish_forget(
+        &self,
+        root: &Path,
+        id: &str,
+        approval: Option<&Fields>,
+        expected_captured: Option<Option<&str>>,
+    ) -> Result<()> {
         let (raw, c, l) = read_tombstones(root, id)?;
         let c = c.ok_or("Memory tombstone disappeared during removal")?;
         if c.get("supersedes").is_none() {
             let conf = match confirmed(Some(&c), l.as_ref()) {
                 Some(v) => v,
                 None => {
-                    let a = find_approval(approval.cloned(), &[captured(root, id)], id)?;
+                    let a = if expected_captured.is_some() {
+                        approval.cloned()
+                    } else {
+                        find_approval(approval.cloned(), &[captured(root, id)], id)?
+                    };
                     tomb_fields(id, a.as_ref())
                 }
             };
@@ -907,15 +958,33 @@ impl Store {
                 write_tombstone(root, id, raw.as_deref(), &conf)?;
             }
         }
-        io::delete(&captured(root, id))?;
+        let path = captured(root, id);
+        if let Some(expected) = expected_captured {
+            check_note_snapshot(io::read(&path)?.as_deref(), expected)?;
+        }
+        io::delete(&path)?;
         Ok(())
     }
-    pub(crate) fn forget_locked(&self, root: &Path, id: &str) -> Result<Value> {
+    pub(crate) fn forget_locked(
+        &self,
+        root: &Path,
+        id: &str,
+        expected: Option<ForgetSnapshot<'_>>,
+    ) -> Result<Value> {
         let (raw, c, l) = read_tombstones(root, id)?;
         let marker = legacy(root, "Approved", id);
+        let record = record(root, id);
+        let captured = captured(root, id);
+        if let Some(expected) = &expected {
+            check_note_snapshot(io::read(&record)?.as_deref(), expected.record)?;
+            check_note_snapshot(io::read(&captured)?.as_deref(), expected.captured)?;
+            check_note_snapshot(io::read(&marker)?.as_deref(), expected.approval_marker)?;
+        }
         let has_marker = io::file(&marker)?;
-        let has_record = io::file(&record(root, id))?;
-        let approval = if has_marker {
+        let has_record = io::file(&record)?;
+        let approval = if let Some(snapshot) = &expected {
+            snapshot.approval(id)?
+        } else if has_marker {
             note(&marker, id, APPROVED, true).ok().flatten()
         } else {
             None
@@ -927,28 +996,44 @@ impl Store {
             let observed = match confirmed(c.as_ref(), l.as_ref()) {
                 Some(v) => v,
                 None => {
-                    let a = find_approval(
-                        approval.clone(),
-                        &[captured(root, id), record(root, id)],
-                        id,
-                    )?;
+                    let a = if expected.is_some() {
+                        approval.clone()
+                    } else {
+                        find_approval(approval.clone(), &[captured.clone(), record.clone()], id)?
+                    };
                     tomb_fields(id, a.as_ref())
                 }
             };
             write_tombstone(root, id, None, &observed)?;
         }
-        self.finish_forget(root, id, approval.as_ref())?;
-        if io::file(&record(root, id))? {
-            if io::file(&captured(root, id))? {
+        self.finish_forget(
+            root,
+            id,
+            approval.as_ref(),
+            expected.as_ref().map(|snapshot| snapshot.captured),
+        )?;
+        if let Some(expected) = &expected {
+            check_note_snapshot(io::read(&record)?.as_deref(), expected.record)?;
+        }
+        if io::file(&record)? {
+            if io::file(&captured)? {
                 return Err("Previous memory removal is incomplete".into());
             }
-            match fs::rename(record(root, id), captured(root, id)) {
-                Ok(()) => self.finish_forget(root, id, approval.as_ref())?,
+            match fs::rename(&record, &captured) {
+                Ok(()) => self.finish_forget(
+                    root,
+                    id,
+                    approval.as_ref(),
+                    expected.as_ref().map(|snapshot| snapshot.record),
+                )?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && expected.is_some() => {
+                    return Err(NOTE_CHANGED.into());
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(io::err(e)),
             }
         }
-        io::sync_parent(&record(root, id))?;
+        io::sync_parent(&record)?;
         Ok(json!({"id":id,"status":"forgotten"}))
     }
     pub fn search(&self, b: &Binding, query: &str, limit: usize) -> Result<Value> {
