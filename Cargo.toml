@@ -1,0 +1,47 @@
+[package]
+name = "fmem"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+description = "Локальная память агентов с Obsidian и гибридным поиском"
+repository = "https://github.com/WhyFaust/fmem"
+
+[features]
+default = ["local-embeddings"]
+local-embeddings = ["dep:fastembed", "dep:ort", "dep:libloading", "dep:ureq", "dep:zip", "dep:flate2", "dep:tar", "dep:clap", "dep:rmcp", "dep:tokio"]
+
+[[bin]]
+name = "fmem"
+path = "src/main.rs"
+required-features = ["local-embeddings"]
+
+[dependencies]
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"] }
+fs2 = "0.4"
+chrono = "0.4"
+libc = "0.2"
+unicode-casefold = "0.2"
+rust-stemmers = "1.2.0"
+sqlite-vec = "=0.1.9"
+fastembed = { version = "=5.8.0", default-features = false, features = ["ort-load-dynamic"], optional = true }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic"], optional = true }
+libloading = { version = "0.8", optional = true }
+ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs"], optional = true }
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-io", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
