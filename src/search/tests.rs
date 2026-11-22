@@ -1,7 +1,8 @@
 use super::*;
 use crate::memory::{format, shared};
+use crate::test_directory as tempdir;
 use serde_json::json;
-use tempfile::{tempdir, TempDir};
+use tempfile::TempDir;
 
 fn fixture() -> (TempDir, Store, Binding) {
     let temporary = tempdir().unwrap();

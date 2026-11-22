@@ -13,7 +13,7 @@ use tempfile::TempDir;
 struct Fixture(TempDir);
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         fs::create_dir_all(temp.path().join("vault/.obsidian")).unwrap();
         fs::create_dir(temp.path().join("project")).unwrap();
         let result = Self(temp);

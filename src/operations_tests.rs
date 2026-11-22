@@ -1,6 +1,7 @@
 use super::*;
+use crate::test_directory as tempdir;
 use std::{fs, sync::Barrier, thread};
-use tempfile::{tempdir, TempDir};
+use tempfile::TempDir;
 
 fn fixture() -> (TempDir, Store, Binding) {
     let temp = tempdir().unwrap();
