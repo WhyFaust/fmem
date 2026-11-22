@@ -1,0 +1,27 @@
+{
+  "collapse-filter": true,
+  "search": "path:/^Codex Memory\\/Projects\\/[^\\/]+\\/[^\\/]+\\.md$/ OR path:/^Codex Memory\\/(Projects\\/[^\\/]+|Shared)\\/Records\\/[0-9a-f]{64}\\/[^\\/]+\\.md$/ OR path:/^Codex Memory\\/Общие\\.md$/",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": true,
+  "showOrphans": true,
+  "collapse-color-groups": true,
+  "colorGroups": [
+    {"query": "[fstack_memory_project] OR [fstack_shared_preferences:1]", "color": {"a": 1, "rgb": 14476015}},
+    {"query": "[kind:decision]", "color": {"a": 1, "rgb": 7653304}},
+    {"query": "[kind:correction]", "color": {"a": 1, "rgb": 15186298}},
+    {"query": "[kind:preference]", "color": {"a": 1, "rgb": 11050220}}
+  ],
+  "collapse-display": true,
+  "showArrow": false,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1.15,
+  "lineSizeMultiplier": 0.7,
+  "collapse-forces": true,
+  "centerStrength": 0.55,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 180,
+  "scale": 0.8,
+  "close": true
+}

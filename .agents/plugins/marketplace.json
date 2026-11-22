@@ -1,0 +1,12 @@
+{
+  "name": "fmem",
+  "interface": { "displayName": "fmem" },
+  "plugins": [
+    {
+      "name": "fmem",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

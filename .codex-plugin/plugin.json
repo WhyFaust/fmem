@@ -1,0 +1,13 @@
+{
+  "name": "fmem",
+  "version": "0.1.0",
+  "description": "Локальная память проекта в Obsidian для Codex.",
+  "author": { "name": "WhyFaust" },
+  "repository": "https://github.com/WhyFaust/fmem",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "fmem",
+    "shortDescription": "Память проекта в Obsidian",
+    "category": "Productivity"
+  }
+}

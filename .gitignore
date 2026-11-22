@@ -1,0 +1,9 @@
+/target/
+/.fmem/
+*.db
+*.db-shm
+*.db-wal
+/dist/
+/fmem-*.zip
+__pycache__/
+*.pyc

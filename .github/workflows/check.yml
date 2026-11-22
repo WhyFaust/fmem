@@ -1,0 +1,82 @@
+name: check
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v0.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, binary: fmem}
+          - {os: windows-latest, target: x86_64-pc-windows-msvc, binary: fmem.exe}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, binary: fmem}
+          - {os: macos-15, target: aarch64-apple-darwin, binary: fmem}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt,clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --release --locked
+      - run: cargo test --release --locked --no-default-features
+      - run: cargo build --release --locked
+      - name: Проверить автоматические хуки в Codex
+        if: runner.os == 'Linux'
+        run: |
+          cli_dir="$RUNNER_TEMP/fmem-codex"
+          npm install --prefix "$cli_dir" --prefer-online --no-save --no-audit --no-fund @openai/codex@latest
+          codex="$cli_dir/node_modules/.bin/codex"
+          "$codex" --version
+          python scripts/check_codex_hooks.py --fmem target/release/fmem --codex "$codex" --scratch-dir "$RUNNER_TEMP"
+          python scripts/check_codex_agents.py --fmem target/release/fmem --codex "$codex" --scratch-dir "$RUNNER_TEMP"
+      - name: Подготовить архив
+        env:
+          FMEM_BINARY: ${{ matrix.binary }}
+          FMEM_TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          cp "target/release/$FMEM_BINARY" dist/
+          cp README.md LICENSE dist/
+          python scripts/notices.py --output dist/THIRD_PARTY_NOTICES.txt
+          python scripts/package.py "$FMEM_TARGET"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: fmem-${{ matrix.target }}
+          path: fmem-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v0.')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Опубликовать проверенные архивы
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FMEM_TAG: ${{ github.ref_name }}
+        run: gh release create "$FMEM_TAG" dist/*.zip --verify-tag --generate-notes

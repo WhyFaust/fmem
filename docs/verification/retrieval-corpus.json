@@ -1,0 +1,519 @@
+{
+  "model": "intfloat/multilingual-e5-small",
+  "revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+  "runtime": "ONNX Runtime 1.22.0 CPU",
+  "limit": 3,
+  "max_bytes": 4000,
+  "records": [
+    {
+      "title": "Изоляция тестовых данных",
+      "body": "Каждый параллельный тест создаёт отдельного пользователя и записи через REST API. Общие изменяемые учётные записи и строки базы между тестами запрещены; фикстура удаляет только свои данные после завершения.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "parallel",
+      "kind": "decision"
+    },
+    {
+      "title": "Payment retries and duplicate charges",
+      "body": "When retrying payment capture after a timeout, reuse the original idempotency key. Generate a fresh key only for a different logical purchase, never merely because a response was lost.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "payment",
+      "kind": "decision"
+    },
+    {
+      "title": "Откат релиза аналитики",
+      "body": "Аналитика развёртывается по схеме blue-green. При росте доли HTTP 500 выше одного процента за пять минут переключить трафик обратно на предыдущую версию и сохранить результаты проверки.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "rollback",
+      "kind": "decision"
+    },
+    {
+      "title": "Хранение результатов CI",
+      "body": "Сырые артефакты интеграционных прогонов CI храним тридцать дней, после чего автоматически удаляем.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "retention-old",
+      "kind": "decision"
+    },
+    {
+      "title": "Срок хранения результатов CI уточнён",
+      "body": "Сырые артефакты интеграционных прогонов CI удаляем через семь дней. Краткий сводный отчёт храним девяносто дней. Прежнее правило тридцати дней больше не применяется.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "retention-new",
+      "kind": "correction",
+      "supersedes": "retention-old"
+    },
+    {
+      "title": "Transient mail delivery failures",
+      "body": "The mail sender retries temporary provider errors with exponential backoff and random jitter, capped at five minutes. It must not schedule every retry with the same fixed delay.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "mail",
+      "kind": "decision"
+    },
+    {
+      "title": "Время в API",
+      "body": "В API и сохранённых событиях время записывается в UTC в формате RFC 3339. Часовой пояс пользователя применяется только при отображении в интерфейсе.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "timestamps",
+      "kind": "decision"
+    },
+    {
+      "title": "Селекторы браузерных проверок",
+      "body": "Браузерные проверки находят интерактивные элементы по доступной роли и имени. Стабильный data-testid разрешён только там, где доступного имени нет.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "selectors",
+      "kind": "decision"
+    },
+    {
+      "title": "Release version labels",
+      "body": "Release tags use a v prefix followed by semantic version numbers; the changelog is committed before the tag is created.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "random",
+      "kind": "decision"
+    },
+    {
+      "title": "Итог проверки",
+      "body": "В отчёте по этому проекту укажи выполненную команду и краткий результат проверки.",
+      "project": "alpha",
+      "scope": "project",
+      "key": "report",
+      "kind": "preference"
+    },
+    {
+      "title": "Рабочий язык ответов",
+      "body": "Во всех проектах итог пользователю пишем по-русски; названия API и команды оставляем в исходном виде.",
+      "project": "alpha",
+      "scope": "shared",
+      "key": "shared",
+      "kind": "preference"
+    },
+    {
+      "title": "Payment retries and duplicate charges BETA",
+      "body": "For this separate disposable demonstration, a retry uses a new operation key. This policy belongs only to beta and must never be used in alpha.",
+      "project": "beta",
+      "scope": "project",
+      "key": "beta-payment",
+      "kind": "decision"
+    },
+    {
+      "title": "Часовой пояс стенда beta",
+      "body": "В проекте beta метки в тестовом журнале отображаются в часовом поясе Москвы.",
+      "project": "beta",
+      "scope": "project",
+      "key": "beta-timestamps",
+      "kind": "decision"
+    }
+  ],
+  "results": [
+    {
+      "query": "Can concurrently running checks share one account and database row?",
+      "expected": "parallel",
+      "mode": "lexical",
+      "rank": null,
+      "returned": []
+    },
+    {
+      "query": "Can concurrently running checks share one account and database row?",
+      "expected": "parallel",
+      "mode": "semantic",
+      "rank": 2,
+      "returned": [
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.7855751514434814
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.7801229506731033
+        },
+        {
+          "title": "Селекторы браузерных проверок",
+          "score": 0.7717322707176208
+        }
+      ]
+    },
+    {
+      "query": "Can concurrently running checks share one account and database row?",
+      "expected": "parallel",
+      "mode": "hybrid",
+      "rank": 2,
+      "returned": [
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.01639344262295082
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.016129032258064516
+        },
+        {
+          "title": "Селекторы браузерных проверок",
+          "score": 0.015873015873015872
+        }
+      ]
+    },
+    {
+      "query": "Запрос списания не получил ответ, отправляем его ещё раз: как избежать второго платежа?",
+      "expected": "payment",
+      "mode": "lexical",
+      "rank": null,
+      "returned": []
+    },
+    {
+      "query": "Запрос списания не получил ответ, отправляем его ещё раз: как избежать второго платежа?",
+      "expected": "payment",
+      "mode": "semantic",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.8020220547914505
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.7886361330747604
+        }
+      ]
+    },
+    {
+      "query": "Запрос списания не получил ответ, отправляем его ещё раз: как избежать второго платежа?",
+      "expected": "payment",
+      "mode": "hybrid",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.01639344262295082
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.015873015873015872
+        }
+      ]
+    },
+    {
+      "query": "How do we undo a bad release after server errors climb?",
+      "expected": "rollback",
+      "mode": "lexical",
+      "rank": null,
+      "returned": [
+        {
+          "title": "Release version labels",
+          "score": 2.9932024398102324
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 1.8797327934759416
+        },
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 1.8384087722324751
+        }
+      ]
+    },
+    {
+      "query": "How do we undo a bad release after server errors climb?",
+      "expected": "rollback",
+      "mode": "semantic",
+      "rank": null,
+      "returned": [
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.8206397294998169
+        },
+        {
+          "title": "Release version labels",
+          "score": 0.8184694647789001
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.8147011399269104
+        }
+      ]
+    },
+    {
+      "query": "How do we undo a bad release after server errors climb?",
+      "expected": "rollback",
+      "mode": "hybrid",
+      "rank": null,
+      "returned": [
+        {
+          "title": "Release version labels",
+          "score": 0.03252247488101534
+        },
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.032266458495966696
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.03200204813108039
+        }
+      ]
+    },
+    {
+      "query": "Через сколько очищаем сырые результаты интеграционных запусков?",
+      "expected": "retention-new",
+      "mode": "lexical",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Срок хранения результатов CI уточнён",
+          "score": 6.281072048031933
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 1.7943006889108521
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 1.349981494365885
+        }
+      ]
+    },
+    {
+      "query": "Через сколько очищаем сырые результаты интеграционных запусков?",
+      "expected": "retention-new",
+      "mode": "semantic",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Срок хранения результатов CI уточнён",
+          "score": 0.8536294847726822
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.80626180768013
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.7903603613376617
+        }
+      ]
+    },
+    {
+      "query": "Через сколько очищаем сырые результаты интеграционных запусков?",
+      "expected": "retention-new",
+      "mode": "hybrid",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Срок хранения результатов CI уточнён",
+          "score": 0.03278688524590164
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.03225806451612903
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.031746031746031744
+        }
+      ]
+    },
+    {
+      "query": "Почтовый провайдер временно недоступен; как разнести повторные отправки по времени?",
+      "expected": "mail",
+      "mode": "lexical",
+      "rank": null,
+      "returned": []
+    },
+    {
+      "query": "Почтовый провайдер временно недоступен; как разнести повторные отправки по времени?",
+      "expected": "mail",
+      "mode": "semantic",
+      "rank": 2,
+      "returned": [
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.8299923241138458
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.8083304911851883
+        },
+        {
+          "title": "Время в API",
+          "score": 0.79489466547966
+        }
+      ]
+    },
+    {
+      "query": "Почтовый провайдер временно недоступен; как разнести повторные отправки по времени?",
+      "expected": "mail",
+      "mode": "hybrid",
+      "rank": 2,
+      "returned": [
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.01639344262295082
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.016129032258064516
+        },
+        {
+          "title": "Время в API",
+          "score": 0.015873015873015872
+        }
+      ]
+    },
+    {
+      "query": "Which timezone belongs in persisted API event timestamps?",
+      "expected": "timestamps",
+      "mode": "lexical",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Время в API",
+          "score": 1.7305691759778015
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.9213102087939374
+        }
+      ]
+    },
+    {
+      "query": "Which timezone belongs in persisted API event timestamps?",
+      "expected": "timestamps",
+      "mode": "semantic",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Время в API",
+          "score": 0.8271042257547379
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.7661702185869217
+        },
+        {
+          "title": "Payment retries and duplicate charges",
+          "score": 0.759472206234932
+        }
+      ]
+    },
+    {
+      "query": "Which timezone belongs in persisted API event timestamps?",
+      "expected": "timestamps",
+      "mode": "hybrid",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Время в API",
+          "score": 0.03278688524590164
+        },
+        {
+          "title": "Изоляция тестовых данных",
+          "score": 0.0315136476426799
+        },
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.016129032258064516
+        }
+      ]
+    },
+    {
+      "query": "How should browser automation locate an accessible button?",
+      "expected": "selectors",
+      "mode": "lexical",
+      "rank": null,
+      "returned": []
+    },
+    {
+      "query": "How should browser automation locate an accessible button?",
+      "expected": "selectors",
+      "mode": "semantic",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Селекторы браузерных проверок",
+          "score": 0.8014408499002457
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.7762582749128342
+        },
+        {
+          "title": "Release version labels",
+          "score": 0.7733263522386551
+        }
+      ]
+    },
+    {
+      "query": "How should browser automation locate an accessible button?",
+      "expected": "selectors",
+      "mode": "hybrid",
+      "rank": 1,
+      "returned": [
+        {
+          "title": "Селекторы браузерных проверок",
+          "score": 0.01639344262295082
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.016129032258064516
+        },
+        {
+          "title": "Release version labels",
+          "score": 0.015873015873015872
+        }
+      ]
+    },
+    {
+      "query": "How long should I bake a sourdough loaf?",
+      "expected": null,
+      "mode": "lexical",
+      "rank": null,
+      "returned": []
+    },
+    {
+      "query": "How long should I bake a sourdough loaf?",
+      "expected": null,
+      "mode": "semantic",
+      "rank": null,
+      "returned": [
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.7633606791496277
+        },
+        {
+          "title": "Срок хранения результатов CI уточнён",
+          "score": 0.7547917515039444
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.7429481446743011
+        }
+      ]
+    },
+    {
+      "query": "How long should I bake a sourdough loaf?",
+      "expected": null,
+      "mode": "hybrid",
+      "rank": null,
+      "returned": [
+        {
+          "title": "Transient mail delivery failures",
+          "score": 0.01639344262295082
+        },
+        {
+          "title": "Срок хранения результатов CI уточнён",
+          "score": 0.016129032258064516
+        },
+        {
+          "title": "Откат релиза аналитики",
+          "score": 0.015873015873015872
+        }
+      ]
+    }
+  ]
+}
