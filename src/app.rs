@@ -20,7 +20,7 @@ pub struct App {
 impl App {
     pub fn new(store: Store, project_dir: PathBuf, read_only: bool) -> Result<Self> {
         let binding = store
-            .resolve(&project_dir)?
+            .bound(&project_dir)?
             .ok_or("Memory is not configured for this project. Run fmem init.")?;
         Ok(Self {
             store,
@@ -35,7 +35,7 @@ impl App {
     pub fn check_binding(&self) -> Result<()> {
         let current = self
             .store
-            .resolve(&self.project_dir)?
+            .bound(&self.project_dir)?
             .ok_or("Memory was disabled. Restart fmem after configuring it.")?;
         if current.root != self.binding.root
             || current.project != self.binding.project
@@ -201,6 +201,7 @@ impl App {
             "state": self.store.state,
             "mode": self.binding.mode,
             "read_only": self.read_only,
+            "vault_available": self.store.root(&self.binding).is_ok(),
             "model_loaded": self.embeddings.is_some(),
             "semantic_unavailable": self.model_error,
             "index": "rebuildable", "outbox": "durable"

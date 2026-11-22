@@ -234,3 +234,27 @@ fn live_mcp_rejects_rebinding_instead_of_switching_project() {
     let search = fixture.ok(&["search", "SQLite", "--mode", "lexical"], None);
     assert_eq!(search["hits"], json!([]));
 }
+
+#[test]
+fn cli_accepts_and_reports_operations_while_vault_is_offline() {
+    let fixture = Fixture::new();
+    let vault = fixture.0.path().join("vault");
+    let offline = fixture.0.path().join("offline");
+    fs::rename(&vault, &offline).unwrap();
+    let accepted = fixture.ok(&["commit"], Some(&batch()));
+    assert!(accepted["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["status"] == "retryable"));
+    let receipt = fixture.ok(&["receipt", "case.preference"], None);
+    assert_eq!(receipt["receipt"]["status"], "retryable");
+    assert_eq!(fixture.ok(&["status"], None)["vault_available"], false);
+    fs::rename(&offline, &vault).unwrap();
+    let recovered = fixture.ok(&["retry"], None);
+    assert!(recovered["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["status"] == "persisted"));
+}
