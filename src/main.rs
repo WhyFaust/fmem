@@ -1,6 +1,8 @@
 mod app;
+mod codex;
 mod install;
 mod mcp;
+mod worker;
 
 use app::App;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -101,6 +103,10 @@ enum Command {
     Model {
         #[command(subcommand)]
         command: ModelCommand,
+    },
+    Codex {
+        #[command(subcommand)]
+        command: codex::Command,
     },
     Mcp,
 }
@@ -241,9 +247,20 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run(Cli::parse()).await {
+fn main() {
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Codex { command } => {
+            codex::run(command, cli.state_dir, &cli.project_dir, cli.read_only)
+                .map(|value| print(&value))
+        }
+        _ => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())
+            .and_then(|runtime| runtime.block_on(run(cli))),
+    };
+    if let Err(error) = result {
         eprintln!("{}", json!({"error": error}));
         std::process::exit(1);
     }

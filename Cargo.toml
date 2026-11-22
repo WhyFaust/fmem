@@ -42,4 +42,4 @@ rmcp = { version = "=3.11.0", default-features = false, features = ["server", "t
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security_Cryptography"] }

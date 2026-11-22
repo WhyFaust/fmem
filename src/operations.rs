@@ -1,7 +1,7 @@
 use crate::{
     memory::{
         format, io, shared,
-        store::{captured, legacy, record, verified_forgotten, ForgetSnapshot},
+        store::{captured, find_record, legacy, verified_forgotten, ForgetSnapshot},
         Binding, Store, WriteOutcome,
     },
     protocol, Result,
@@ -573,8 +573,8 @@ fn apply(
     if forgotten && verb != "forget" {
         return Err("Memory entry was forgotten".into());
     }
-    let path = record(&root, id);
-    let raw = io::read(&path)?;
+    let path = find_record(&root, id)?;
+    let raw = path.as_deref().map(io::read).transpose()?.flatten();
     let capture = if verb == "forget" {
         io::read(&captured(&root, id))?
     } else {
@@ -631,7 +631,7 @@ fn apply(
                 {
                     return Err("Existing memory entry differs from the requested result".into());
                 }
-                io::sync_parent(&path)?;
+                io::sync_parent(path.as_deref().ok_or("Memory entry is unavailable")?)?;
                 record
             } else {
                 write_result(
@@ -646,10 +646,11 @@ fn apply(
                 record.as_object_mut().unwrap().remove("status") == Some(json!("memory"));
             verify_version(expected, &io::hash(record.to_string()), remember_version)?;
             if approved {
-                if io::read(&path)?.as_deref() != Some(observed) {
+                let path = path.as_deref().ok_or("Memory entry is unavailable")?;
+                if io::read(path)?.as_deref() != Some(observed) {
                     return Err("Memory note changed while preparing an update".into());
                 }
-                io::sync_parent(&path)?;
+                io::sync_parent(path)?;
                 record["status"] = json!("memory");
                 record
             } else {

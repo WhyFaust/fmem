@@ -38,6 +38,15 @@ jobs:
       - run: cargo test --release --locked
       - run: cargo test --release --locked --no-default-features
       - run: cargo build --release --locked
+      - name: Проверить автоматические хуки в Codex
+        if: runner.os == 'Linux'
+        run: |
+          cli_dir="$RUNNER_TEMP/fmem-codex"
+          npm install --prefix "$cli_dir" --prefer-online --no-save --no-audit --no-fund @openai/codex@latest
+          codex="$cli_dir/node_modules/.bin/codex"
+          "$codex" --version
+          python scripts/check_codex_hooks.py --fmem target/release/fmem --codex "$codex" --scratch-dir "$RUNNER_TEMP"
+          python scripts/check_codex_agents.py --fmem target/release/fmem --codex "$codex" --scratch-dir "$RUNNER_TEMP"
       - name: Подготовить архив
         env:
           FMEM_BINARY: ${{ matrix.binary }}

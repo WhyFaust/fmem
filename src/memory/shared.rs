@@ -7,8 +7,20 @@ use serde_json::{json, Value};
 use std::{fs, path::Path};
 
 const MARKER: &str = "fstack_shared_preferences: 1";
-const PAGE: &str = "---\nfstack_shared_preferences: 1\n---\n\n# Общие предпочтения\n\nЗдесь хранятся только предпочтения, которые пользователь попросил применять во всех проектах этого хранилища.\n";
-pub(super) const LINK: &str = "[[Codex Memory/Shared/Shared]]";
+pub(super) const LINK: &str = "[[Codex Memory/Общие]]";
+
+pub(super) fn check_setup(root: &Path) -> Result<()> {
+    if io::read(&root.join("Общие.md"))?.is_some() {
+        return Ok(());
+    }
+    let shared = root.join("Shared");
+    if io::directory(&shared, false, false)?
+        && fs::read_dir(&shared).map_err(io::err)?.next().is_some()
+    {
+        return Err("Shared preferences directory is occupied".into());
+    }
+    Ok(())
+}
 
 pub(super) fn is_root(root: &Path) -> bool {
     root.file_name().is_some_and(|s| s == "Shared")
@@ -27,9 +39,15 @@ fn binding(b: &Binding) -> Binding {
 
 fn check_page(root: &Path) -> Result<bool> {
     Ok(views::marker(
-        io::read(&root.join("Shared.md"))?.as_deref(),
+        io::read(
+            &root
+                .parent()
+                .ok_or("Invalid shared memory root")?
+                .join("Общие.md"),
+        )?
+        .as_deref(),
         MARKER,
-    ))
+    ) && io::directory(&root.join("Records"), false, false)?)
 }
 
 pub fn for_recall(store: &Store, project: &Binding) -> Result<Option<Binding>> {
@@ -75,7 +93,9 @@ fn prepare(store: &Store, project: &Binding) -> Result<Binding> {
         if fs::read_dir(&root).map_err(io::err)?.next().is_some() {
             return Err("Shared preferences directory is occupied".into());
         }
-        io::write(&root.join("Shared.md"), PAGE, false, None)?;
+        if !views::marker(io::read(&shared.root.join("Общие.md"))?.as_deref(), MARKER) {
+            return Err("Shared preferences page is unavailable".into());
+        }
     }
     io::directory(&root.join("Records"), true, false)?;
     Ok(shared)

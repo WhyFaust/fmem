@@ -1,10 +1,7 @@
 use super::{io, Result};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, sync::LazyLock};
-static PROJECT_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\A\[\[Codex Memory/Projects/([a-z0-9][a-z0-9-]{0,47})/(Project|[a-z0-9][a-z0-9-]{0,47})(?:\|([a-z0-9][a-z0-9-]{0,47}))?\]\]\z").expect("valid project link pattern")
-});
+use std::collections::BTreeMap;
 
 pub type Fields = BTreeMap<String, String>;
 pub const MEMORY: &str = "fstack_memory: 1";
@@ -38,6 +35,98 @@ pub fn project(value: &str) -> Result<&str> {
     } else {
         Ok(value)
     }
+}
+
+fn invalid_filename_character(character: char) -> bool {
+    character.is_control() || "<>:\"/\\|?*[]#^".contains(character)
+}
+
+fn reserved_filename(basename: &str) -> bool {
+    let name = basename
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_uppercase();
+    matches!(
+        name.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|prefix| {
+        name.strip_prefix(prefix).is_some_and(|suffix| {
+            suffix.chars().count() == 1
+                && suffix
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || "¹²³".contains(character))
+        })
+    })
+}
+
+pub(crate) fn validate_record_basename(basename: &str) -> Result<()> {
+    if basename.is_empty()
+        || basename.starts_with('.')
+        || basename.ends_with([' ', '.'])
+        || basename.chars().any(invalid_filename_character)
+        || reserved_filename(basename)
+    {
+        return Err("Invalid memory record filename".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn record_basename(title: &str) -> String {
+    let normalized = title
+        .chars()
+        .map(|character| {
+            if invalid_filename_character(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut basename = String::new();
+    for character in normalized.trim_matches([' ', '.']).chars().take(64) {
+        if basename.len() + character.len_utf8() > 120 {
+            break;
+        }
+        basename.push(character);
+    }
+    let basename = basename.trim_end_matches([' ', '.']);
+    if basename.is_empty() {
+        "Запись".into()
+    } else if reserved_filename(basename) {
+        format!("Запись {basename}")
+    } else {
+        basename.into()
+    }
+}
+
+fn internal_wikilink(link: &str) -> bool {
+    if link.chars().count() > 512
+        || link
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+    {
+        return false;
+    }
+    let Some(inner) = link
+        .strip_prefix("[[")
+        .and_then(|link| link.strip_suffix("]]"))
+    else {
+        return false;
+    };
+    if inner.contains(['[', ']', '<', '>', '\\']) {
+        return false;
+    }
+    let target = match inner.split_once('|') {
+        Some((target, alias)) if !alias.trim().is_empty() && !alias.contains('|') => target,
+        Some(_) => return false,
+        None => inner,
+    };
+    !target.trim().is_empty() && !target.contains(':') && !target.trim_start().starts_with("//")
 }
 pub fn safe(value: &Value, limit: usize, multiline: bool) -> Result<String> {
     let value = value.as_str().ok_or("Invalid memory text")?;
@@ -223,25 +312,13 @@ pub fn parse(raw: &str, entry: &str, marker: &str, include_body: bool) -> Result
         if fields.get("fstack_status").is_some_and(|s| s != "approved") {
             return Err("Invalid memory approval status".into());
         }
-        if let Some(link) = fields
-            .get("project_link")
-            .filter(|s| s.as_str() != super::shared::LINK)
-        {
-            let c = PROJECT_LINK
-                .captures(link)
-                .ok_or("Invalid memory graph link")?;
-            if (&c[2] != "Project" && c[1] != c[2]) || c.get(3).is_some_and(|v| v.as_str() != &c[1])
+        for property in ["project_link", "supersedes_link"] {
+            if fields
+                .get(property)
+                .is_some_and(|link| !internal_wikilink(link))
             {
                 return Err("Invalid memory graph link".into());
             }
-        }
-        if fields.get("supersedes_link").is_some_and(|s| {
-            !matches(
-                r"\A\[\[Codex Memory/(?:Shared|Projects/[a-z0-9][a-z0-9-]{0,47})/Records/[0-9a-f]{64}\]\]\z",
-                s,
-            )
-        }) {
-            return Err("Invalid memory graph link".into());
         }
         if include_body {
             safe(&json!(fields.get("title")), 160, false)?;

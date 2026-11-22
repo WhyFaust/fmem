@@ -52,14 +52,23 @@ fn persistent_search_follows_external_edit_deletion_and_rebuild() {
     assert_eq!(original.id, id);
     assert_eq!(
         original.source,
-        format!("Codex Memory/Projects/sample/Records/{id}.md")
+        format!("Codex Memory/Projects/sample/Records/{id}/Проверка изменений.md")
     );
     assert!(original.snippet.contains("скриншотов"));
     let report = reopened.index(&binding, false, None).unwrap();
     assert_eq!((report.active, report.updated, report.pending), (1, 0, 1));
 
     let root = store.root(&binding).unwrap();
-    let path = store::record(&root, &id);
+    let original_path = store::record(&root, &id).unwrap();
+    let path = original_path.with_file_name("Проверка интерфейса.md");
+    fs::rename(&original_path, &path).unwrap();
+    let renamed = &compact(&reopened, &binding, "скриншотам")[0];
+    assert_eq!(renamed.id, id);
+    assert_eq!(renamed.revision, original.revision);
+    assert_eq!(
+        renamed.source,
+        format!("Codex Memory/Projects/sample/Records/{id}/Проверка интерфейса.md")
+    );
     let note = fs::read_to_string(&path).unwrap();
     fs::write(&path, note.replace("скриншотов", "видеозаписей")).unwrap();
     assert!(compact(&store, &binding, "скриншотам").is_empty());
@@ -171,7 +180,7 @@ fn search_filters_scope_and_kind_before_top_k_and_lists_active_preferences() {
         SearchIndex::open(&store.state, &root, binding.root.parent().unwrap(), false).unwrap();
     let mut vector = vec![0.0; DIMENSIONS];
     vector[0] = 1.0;
-    let candidates = index.pending(0).unwrap();
+    let candidates = index.pending(0, 32).unwrap();
     let vectors = candidates
         .into_iter()
         .map(|candidate| {
@@ -225,13 +234,13 @@ fn late_embeddings_cannot_restore_edited_superseded_or_forgotten_records() {
     index
         .refresh(&store, &root, Refresh::Incremental, false)
         .unwrap();
-    let pending = index.pending(0).unwrap();
+    let pending = index.pending(0, 32).unwrap();
     assert_eq!(pending.len(), 3);
 
     let successor = store.save(&binding, &json!({
         "kind":"decision", "title":"Current process", "body":"Adopt the current process.", "supersedes":obsolete
     }), true, None, None).unwrap();
-    let path = store::record(&root, &editable);
+    let path = store::record(&root, &editable).unwrap();
     fs::write(
         &path,
         fs::read_to_string(&path)
@@ -252,7 +261,7 @@ fn late_embeddings_cannot_restore_edited_superseded_or_forgotten_records() {
         .collect();
     assert_eq!(index.commit_vectors(late).unwrap(), 0);
     assert!(index.semantic(&vector, 10, None).unwrap().is_empty());
-    let active = index.pending(0).unwrap();
+    let active = index.pending(0, 32).unwrap();
     assert_eq!(active.len(), 2);
     assert_eq!(
         index
@@ -401,7 +410,15 @@ fn multilingual_model_recovers_russian_and_english_paraphrases() {
         .semantic_unavailable
         .unwrap()
         .contains("1 pending in scope"));
-    let report = store.update_index(&binding, Some(&mut embeddings)).unwrap();
+    let blocked = store
+        .update_index_batch(&binding, &mut embeddings, 1, || false)
+        .unwrap_err();
+    assert_eq!(blocked, "Memory binding changed during embedding");
+    let report = store.index(&binding, false, None).unwrap();
+    assert_eq!((report.pending, report.embedded), (1, 0));
+    let report = store
+        .update_index_batch(&binding, &mut embeddings, 1, || true)
+        .unwrap();
     assert_eq!((report.pending, report.embedded), (0, 1));
 }
 
@@ -434,8 +451,10 @@ fn benchmark_persistent_against_legacy() {
             ("created".into(), "2026-01-01T00:00:00+00:00".into()),
             ("fstack_status".into(), "approved".into()),
         ]);
+        let directory = root.join("Records").join(&id);
+        fs::create_dir(&directory).unwrap();
         fs::write(
-            store::record(&root, &id),
+            directory.join(format!("{title} {n}.md")),
             format::markdown(format::MEMORY, &fields, body),
         )
         .unwrap();

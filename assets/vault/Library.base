@@ -1,32 +1,44 @@
 filters:
   and:
-    - '(file.inFolder("Codex Memory/Projects") || file.folder == "Codex Memory/Shared/Records")'
-    - 'file.folder.endsWith("/Records")'
     - 'file.ext == "md"'
-    - 'fstack_memory == 1'
-    - '(file(file.folder + "/" + file.basename + "-forgotten.json") == null && file(file.path.replace("/Records/", "/Forgotten/")) == null)'
-    - 'this.file.properties.fstack_memory_project == null || file.folder == "Codex Memory/Projects/" + this.file.properties.fstack_memory_project + "/Records"'
+    - 'note.fstack_memory == 1'
+    - 'file.folder.endsWith("/Records/" + note.id)'
+    - '(file.inFolder("Codex Memory/Projects") || (formula.shared && note.kind == "preference"))'
+    - 'file(formula.records_folder + "/" + note.id + "-forgotten.json") == null'
+    - 'file(formula.scope_folder + "/Forgotten/" + note.id + ".md") == null'
+    - 'this.file.properties.fstack_memory_project == null || formula.records_folder == "Codex Memory/Projects/" + this.file.properties.fstack_memory_project + "/Records"'
 formulas:
-  record: 'link(file.path, title)'
-  project: 'if(file.folder == "Codex Memory/Shared/Records", "Общие", file.folder.split("/")[2])'
+  records_folder: 'file.folder.split("/").slice(0, -1).join("/")'
+  scope_folder: 'file.folder.split("/").slice(0, -2).join("/")'
+  record: 'link(file.path, note.title)'
+  shared: 'formula.records_folder == "Codex Memory/Shared/Records"'
+  project: 'if(formula.shared, "Общие", file.folder.split("/")[2])'
+  kind: 'if(note.kind == "decision", "Решение", if(note.kind == "correction", "Поправка", if(note.kind == "preference", "Предпочтение", note.kind)))'
+  day: 'if(note.created == null, null, if(note.created.isType("date"), note.created.format("YYYY-MM-DD"), note.created.toString().slice(0, 10)))'
+  legacy_marker: 'file(formula.scope_folder + "/Approved/" + note.id + ".md")'
+  legacy_approved: 'formula.legacy_marker != null && formula.legacy_marker.properties.fstack_approved == 1 && formula.legacy_marker.properties.id == note.id'
+  approved: 'note.fstack_status == "approved" || formula.legacy_approved'
+  previous_id: 'if(formula.legacy_approved, formula.legacy_marker.properties.supersedes, note.supersedes)'
+  previous_file: 'if(note.supersedes_link != null, file(note.supersedes_link), null)'
+  previous: 'if(formula.previous_id == null, null, if(formula.previous_file != null, link(formula.previous_file.path, formula.previous_file.properties.title), "Запись недоступна"))'
 properties:
   formula.record:
     displayName: Запись
   formula.project:
-    displayName: Проект
-  note.kind:
+    displayName: Область
+  formula.kind:
     displayName: Тип
-  note.created:
+  formula.day:
     displayName: Дата
   note.source:
     displayName: Основание
-  note.supersedes_link:
+  formula.previous:
     displayName: Заменяет
 views:
   - type: table
     name: Сохранённые
-    filters: '(note.fstack_status == "approved" || file(file.path.replace("/Records/", "/Approved/")) != null)'
-    order: [formula.record, formula.project, note.kind, note.created, note.source, note.supersedes_link]
+    filters: 'formula.approved'
+    order: [formula.record, formula.kind, formula.day, note.source]
     sort:
       - property: note.created
         direction: DESC
@@ -34,8 +46,55 @@ views:
         direction: ASC
   - type: table
     name: Inbox
-    filters: '(note.fstack_status != "approved" && file(file.path.replace("/Records/", "/Approved/")) == null)'
-    order: [formula.record, formula.project, note.kind, note.created, note.source, note.supersedes_link]
+    filters: '!formula.approved'
+    order: [formula.record, formula.kind, formula.day, note.source]
+    sort:
+      - property: note.created
+        direction: ASC
+      - property: file.path
+        direction: ASC
+  - type: table
+    name: История замен
+    filters: 'formula.approved && formula.previous_id != null'
+    order: [formula.record, formula.previous, formula.day, note.source]
+    sort:
+      - property: note.created
+        direction: DESC
+      - property: file.path
+        direction: ASC
+  - type: list
+    name: На разбор
+    filters: '!formula.approved'
+    limit: 6
+    order: [formula.record, formula.project, formula.kind]
+    sort:
+      - property: note.created
+        direction: ASC
+      - property: file.path
+        direction: ASC
+  - type: list
+    name: Недавние
+    filters: 'formula.approved'
+    limit: 8
+    order: [formula.record, formula.project, formula.kind, formula.day]
+    sort:
+      - property: note.created
+        direction: DESC
+      - property: file.path
+        direction: ASC
+  - type: table
+    name: Общие предпочтения
+    filters: 'formula.shared && formula.approved'
+    order: [formula.record, formula.day, note.source, formula.previous]
+    sort:
+      - property: note.created
+        direction: DESC
+      - property: file.path
+        direction: ASC
+  - type: table
+    name: Общий Inbox
+    filters: 'formula.shared && !formula.approved'
+    order: [formula.record, formula.day, note.source]
     sort:
       - property: note.created
         direction: ASC

@@ -1,4 +1,5 @@
 use super::*;
+use crate::memory::store::record;
 use crate::test_directory as tempdir;
 use std::{fs, sync::Barrier, thread};
 use tempfile::TempDir;
@@ -45,12 +46,13 @@ fn replays_after_markdown_publish_without_a_second_write() {
     let (_temp, store, binding) = fixture();
     let (journal, operation) = start(&store, &binding, &remember("test-a"));
     let id = operation.record_id.as_deref().unwrap();
-    let path = record(&store.root(&binding).unwrap(), id);
     assert_eq!(
         receipt(&store, &binding, "test-a").unwrap().unwrap()["status"],
         "accepted"
     );
-    assert!(!path.exists());
+    assert!(find_record(&store.root(&binding).unwrap(), id)
+        .unwrap()
+        .is_none());
 
     apply(
         &store,
@@ -62,8 +64,12 @@ fn replays_after_markdown_publish_without_a_second_write() {
         |_| Ok(()),
     )
     .unwrap();
+    let path = record(&store.root(&binding).unwrap(), id).unwrap();
     let original = fs::read(&path).unwrap();
     assert!(!String::from_utf8_lossy(&original).contains("test-a"));
+    let renamed = path.with_file_name("Проверенные условия.md");
+    fs::rename(&path, &renamed).unwrap();
+    let path = renamed;
     drop(journal);
 
     let result = retry_pending(&store, &binding, 1).unwrap();
@@ -96,7 +102,7 @@ fn rejects_reused_keys_and_never_implicitly_approves_duplicates() {
     draft["action"] = json!("draft");
     let original = one(&store, &binding, draft.clone());
     let id = original["record_id"].as_str().unwrap();
-    let path = record(&store.root(&binding).unwrap(), id);
+    let path = record(&store.root(&binding).unwrap(), id).unwrap();
     let text = fs::read(&path).unwrap();
 
     let changed = one(&store, &binding, remember("create"));
@@ -191,11 +197,12 @@ fn accepts_an_unavailable_vault_and_does_not_retarget_pending_operations() {
         retry_pending(&store, &rebound, 5).unwrap()["receipts"],
         json!([])
     );
-    assert!(!record(
+    assert!(find_record(
         &store.root(&rebound).unwrap(),
         pending["record_id"].as_str().unwrap()
     )
-    .exists());
+    .unwrap()
+    .is_none());
 
     fs::rename(&offline, vault).unwrap();
     let delivered = retry_pending(&store, &binding, 5).unwrap();
@@ -229,7 +236,7 @@ fn detects_record_changes_before_resuming_approval() {
     assert_eq!(interrupted.unwrap_err(), "Simulated interruption");
     drop(journal);
 
-    let path = record(&store.root(&binding).unwrap(), id);
+    let path = record(&store.root(&binding).unwrap(), id).unwrap();
     let text = fs::read_to_string(&path)
         .unwrap()
         .replace("Acceptance criteria", "Unknown source");
@@ -247,7 +254,7 @@ fn refuses_to_approve_a_draft_edited_during_application() {
     draft["action"] = json!("draft");
     let saved = one(&store, &binding, draft);
     let id = saved["record_id"].as_str().unwrap();
-    let path = record(&store.root(&binding).unwrap(), id);
+    let path = record(&store.root(&binding).unwrap(), id).unwrap();
     let changed = fs::read_to_string(&path)
         .unwrap()
         .replace("Check fixture", "Wait for sign-off");
@@ -281,7 +288,7 @@ fn refuses_to_forget_a_record_edited_during_application() {
     let saved = one(&store, &binding, remember("save"));
     let id = saved["record_id"].as_str().unwrap();
     let root = store.root(&binding).unwrap();
-    let path = record(&root, id);
+    let path = record(&root, id).unwrap();
     let changed = fs::read_to_string(&path)
         .unwrap()
         .replace("Check fixture", "Wait for sign-off");
@@ -336,12 +343,13 @@ fn completes_a_removal_interrupted_after_renaming_the_note() {
         json!({"id":id,"supersedes":null}).to_string(),
     )
     .unwrap();
-    fs::rename(record(&root, id), captured(&root, id)).unwrap();
+    fs::rename(record(&root, id).unwrap(), captured(&root, id)).unwrap();
     drop(journal);
 
     let outcome = retry_pending(&store, &binding, 1).unwrap();
     assert_eq!(outcome["receipts"][0]["result"]["status"], "forgotten");
     assert!(!captured(&root, id).exists());
+    assert!(!root.join("Records").join(id).exists());
     assert!(store.get(&binding, id).is_err());
     let probe = one(&store, &binding, remember("recreate"));
     assert_eq!(probe["code"], "record_forgotten");

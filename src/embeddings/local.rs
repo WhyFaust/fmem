@@ -81,7 +81,31 @@ impl Embeddings {
         Ok(())
     }
 
+    pub fn installed(state: &Path) -> Result<bool> {
+        let directory = model_directory(state);
+        if !io::directory(&directory, false, false)?
+            || !io::file(&state.join("models").join(runtime_filename()))?
+        {
+            return Ok(false);
+        }
+        for ((relative, _), size) in MODEL_FILES.into_iter().zip(MODEL_FILE_SIZES) {
+            let path = directory.join(relative);
+            if !io::file(&path)? || fs::metadata(path).map_err(io::err)?.len() != size {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn load_installed(state: &Path) -> Result<Self> {
+        Self::load_model(&io::absolute(state)?, true)
+    }
+
     pub fn load(state: &Path) -> Result<Self> {
+        Self::load_model(state, false)
+    }
+
+    fn load_model(state: &Path, installed_only: bool) -> Result<Self> {
         let directory = model_directory(state);
         if !io::directory(&directory, false, false)? {
             return Err(format!("Embedding model {MODEL_ID} is not installed"));
@@ -89,7 +113,7 @@ impl Embeddings {
         for ((relative, _), size) in MODEL_FILES.into_iter().zip(MODEL_FILE_SIZES) {
             check_model_file(&directory.join(relative), size)?;
         }
-        initialize_runtime(state)?;
+        initialize_runtime(state, installed_only)?;
         let bytes = |relative: &str| {
             fs::read(directory.join(relative))
                 .map_err(|error| format!("Could not read embedding model file {relative}: {error}"))
@@ -151,7 +175,7 @@ fn model_directory(state: &Path) -> PathBuf {
         .join(format!("multilingual-e5-small-{MODEL_REVISION}"))
 }
 
-fn initialize_runtime(state: &Path) -> Result<()> {
+fn initialize_runtime(state: &Path, installed_only: bool) -> Result<()> {
     let mut runtime = RUNTIME
         .lock()
         .map_err(|_| "Embedding runtime initialization failed")?;
@@ -159,12 +183,19 @@ fn initialize_runtime(state: &Path) -> Result<()> {
         return Ok(());
     }
     let installed = state.join("models").join(runtime_filename());
-    let path = match std::env::var_os("ORT_DYLIB_PATH") {
-        Some(path) if !path.is_empty() => PathBuf::from(path),
-        _ if io::file(&installed)? => installed,
-        _ => PathBuf::from(runtime_filename()),
+    let path = if installed_only {
+        if !io::file(&installed)? {
+            return Err("The installed ONNX Runtime is unavailable".into());
+        }
+        installed
+    } else {
+        match std::env::var_os("ORT_DYLIB_PATH") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ if io::file(&installed)? => installed,
+            _ => PathBuf::from(runtime_filename()),
+        }
     };
-    let library = unsafe { libloading::Library::new(&path) }
+    let library = load_runtime_library(&path, installed_only)
         .map_err(|error| format!("ONNX Runtime 1.22+ is unavailable: {error}"))?;
     let api = unsafe {
         let getter: libloading::Symbol<unsafe extern "system" fn() -> *const ort::sys::OrtApiBase> =
@@ -179,6 +210,26 @@ fn initialize_runtime(state: &Path) -> Result<()> {
     ort::set_api(*api);
     *runtime = Some(library);
     Ok(())
+}
+
+fn load_runtime_library(
+    path: &Path,
+    _installed_only: bool,
+) -> std::result::Result<libloading::Library, libloading::Error> {
+    #[cfg(windows)]
+    if _installed_only {
+        use libloading::os::windows::{
+            Library, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+        };
+        return unsafe {
+            Library::load_with_flags(
+                path,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        }
+        .map(Into::into);
+    }
+    unsafe { libloading::Library::new(path) }
 }
 
 fn check_model_file(path: &Path, size: u64) -> Result<()> {

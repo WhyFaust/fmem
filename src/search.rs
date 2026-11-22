@@ -137,6 +137,27 @@ impl Store {
         limit: usize,
         fill: bool,
     ) -> Result<Value> {
+        self.ranked_records_with_vector(binding, query, limit, fill, None)
+    }
+
+    pub fn recall_with_vector(
+        &self,
+        binding: &Binding,
+        query: &str,
+        limit: usize,
+        vector: &[f32],
+    ) -> Result<Value> {
+        self.ranked_records_with_vector(binding, query, limit, true, Some(vector))
+    }
+
+    fn ranked_records_with_vector(
+        &self,
+        binding: &Binding,
+        query: &str,
+        limit: usize,
+        fill: bool,
+        vector: Option<&[f32]>,
+    ) -> Result<Value> {
         validate(query, limit, None)?;
         let query = LexicalQuery::new(query);
         if query.expression.is_none() && !fill {
@@ -151,7 +172,16 @@ impl Store {
         };
         let mut index = SearchIndex::open(&self.state, &root, vault, false)?;
         index.refresh(self, &root, Refresh::Incremental, !fill)?;
-        let mut ranked = index.lexical(&query, limit, None)?;
+        let mut ranked = if let Some(vector) = vector {
+            let candidates = (4 * limit).max(32);
+            let lexical = index.lexical(&query, candidates, None)?;
+            let semantic = index.semantic(vector, candidates, None)?;
+            let mut hits = reciprocal_rank_fusion(lexical, semantic);
+            hits.truncate(limit);
+            hits
+        } else {
+            index.lexical(&query, limit, None)?
+        };
         if fill && ranked.len() < limit {
             index.fill_with_rules(&mut ranked, limit)?;
         }
@@ -235,7 +265,7 @@ impl Store {
             .map(|hit| {
                 let (revision, record) = index.document(hit.rowid)?;
                 let id = record["id"].as_str().ok_or("Missing indexed record ID")?;
-                let source = store::record(&root, id);
+                let source = store::record(&root, id)?;
                 let source = source.strip_prefix(vault).map_err(io::err)?;
                 let source = source
                     .iter()
@@ -271,7 +301,7 @@ impl Store {
         } else {
             Refresh::Reconcile
         };
-        self.update(binding, mode, embeddings)
+        self.update(binding, mode, embeddings, None, || true)
     }
 
     pub fn update_index(
@@ -279,7 +309,26 @@ impl Store {
         binding: &Binding,
         embeddings: Option<&mut Embeddings>,
     ) -> Result<IndexReport> {
-        self.update(binding, Refresh::Incremental, embeddings)
+        self.update(binding, Refresh::Incremental, embeddings, None, || true)
+    }
+
+    pub fn update_index_batch(
+        &self,
+        binding: &Binding,
+        model: &mut Embeddings,
+        limit: usize,
+        still_bound: impl FnOnce() -> bool,
+    ) -> Result<IndexReport> {
+        if !(1..=32).contains(&limit) {
+            return Err("Invalid embedding batch limit".into());
+        }
+        self.update(
+            binding,
+            Refresh::Incremental,
+            Some(model),
+            Some(limit),
+            still_bound,
+        )
     }
 
     fn update(
@@ -287,11 +336,18 @@ impl Store {
         binding: &Binding,
         mode: Refresh,
         embeddings: Option<&mut Embeddings>,
+        batch_limit: Option<usize>,
+        still_bound: impl FnOnce() -> bool,
     ) -> Result<IndexReport> {
         let root = self.root(binding)?;
         let vault = binding.root.parent().ok_or("Missing parent vault")?;
+        let timeout = if batch_limit.is_some() {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(3)
+        };
         let (mut index, mut report) = {
-            let _lock = io::lock(&root, vault)?;
+            let _lock = io::lock_with_timeout(&root, vault, timeout)?;
             let mut index = SearchIndex::open(&self.state, &root, vault, mode == Refresh::Rebuild)?;
             let mut report = index.refresh(self, &root, mode, false)?;
             report.pending = index.pending_count(None)?;
@@ -303,7 +359,7 @@ impl Store {
         let mut completed = Vec::new();
         let mut after = 0;
         loop {
-            let batch = index.pending(after)?;
+            let batch = index.pending(after, batch_limit.unwrap_or(32))?;
             if batch.is_empty() {
                 break;
             }
@@ -319,8 +375,14 @@ impl Store {
                     .zip(vectors)
                     .map(|(pending, vector)| (pending.rowid, pending.revision, vector)),
             );
+            if batch_limit.is_some() {
+                break;
+            }
         }
-        let _lock = io::lock(&root, vault)?;
+        if !still_bound() {
+            return Err("Memory binding changed during embedding".into());
+        }
+        let _lock = io::lock_with_timeout(&root, vault, timeout)?;
         index = SearchIndex::open(&self.state, &root, vault, false)?;
         let rechecked = index.refresh(self, &root, Refresh::Incremental, false)?;
         report.updated += rechecked.updated;
@@ -395,15 +457,11 @@ impl SearchIndex {
         mode: Refresh,
         warn: bool,
     ) -> Result<IndexReport> {
-        let records = store::files(&root.join("Records"), false)?;
+        let records = store::records(root)?;
         let mut stamps = BTreeMap::new();
         for record in &records {
             if let Some(stamp) = fingerprint(record)? {
-                let id = record
-                    .file_stem()
-                    .ok_or("Missing record filename")?
-                    .to_string_lossy();
-                stamps.insert(id.into_owned(), stamp);
+                stamps.insert(store::record_id(record)?.to_owned(), stamp);
             }
         }
 
@@ -624,16 +682,16 @@ impl SearchIndex {
             .map_err(database_error)
     }
 
-    fn pending(&self, after: i64) -> Result<Vec<Pending>> {
+    fn pending(&self, after: i64, limit: usize) -> Result<Vec<Pending>> {
         let mut statement = self
             .connection
             .prepare(
                 "SELECT rowid,revision,data FROM documents WHERE rowid>? AND
-             rowid NOT IN (SELECT rowid FROM semantic) ORDER BY rowid LIMIT 32",
+             rowid NOT IN (SELECT rowid FROM semantic) ORDER BY rowid LIMIT ?2",
             )
             .map_err(database_error)?;
         let rows = statement
-            .query_map([after], |row| {
+            .query_map(params![after, limit], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,

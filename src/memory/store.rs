@@ -10,6 +10,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod paths;
+pub(crate) use paths::find_record;
+use paths::{new_record, remove_empty_record_directory};
+pub use paths::{record, record_id, records};
+
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub root: PathBuf,
@@ -64,9 +69,6 @@ impl WriteOutcome {
 }
 pub struct Store {
     pub state: PathBuf,
-}
-pub fn record(root: &Path, id: &str) -> PathBuf {
-    root.join("Records").join(format!("{id}.md"))
 }
 pub(crate) fn captured(root: &Path, id: &str) -> PathBuf {
     root.join("Records").join(format!(".fstack-forget-{id}"))
@@ -260,22 +262,34 @@ fn graph(
     root: &Path,
     predecessor: Option<&String>,
     link: Option<String>,
-) -> BTreeMap<String, Option<String>> {
-    BTreeMap::from([
-        ("project_link".into(), link),
-        (
-            "supersedes_link".into(),
-            predecessor.map(|s| {
-                if super::shared::is_root(root) {
-                    return format!("[[Codex Memory/Shared/Records/{s}]]");
-                }
+) -> Result<BTreeMap<String, Option<String>>> {
+    let predecessor = predecessor
+        .map(|id| find_record(root, id))
+        .transpose()?
+        .flatten();
+    let predecessor = predecessor
+        .as_ref()
+        .map(|path| -> Result<String> {
+            let relative = path.strip_prefix(root).map_err(io::err)?;
+            let relative = relative
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            Ok(if super::shared::is_root(root) {
+                format!("[[Codex Memory/Shared/{relative}]]")
+            } else {
                 format!(
-                    "[[Codex Memory/Projects/{}/Records/{s}]]",
+                    "[[Codex Memory/Projects/{}/{relative}]]",
                     root.file_name().unwrap().to_string_lossy()
                 )
-            }),
-        ),
-    ])
+            })
+        })
+        .transpose()?;
+    Ok(BTreeMap::from([
+        ("project_link".into(), link),
+        ("supersedes_link".into(), predecessor),
+    ]))
 }
 fn history_diff(previous: &Value, current: &Value) -> Value {
     let mut changes = serde_json::Map::new();
@@ -443,6 +457,7 @@ impl Store {
         if home.is_some() || fs::read_dir(&root).map_err(io::err)?.next().is_some() {
             self.check_home(&root)?;
         }
+        super::shared::check_setup(&root)?;
         for relative in views::VAULT_FILES {
             if *relative != "Home.md" {
                 self.check_home(&root)?;
@@ -505,10 +520,11 @@ impl Store {
             settings_json["generation"] = json!(generation);
         }
         io::write(settings, &settings_json.to_string(), true, None)?;
+        views::ensure_interface(&vault);
         Ok(b)
     }
     pub fn statuses(&self, root: &Path) -> Result<(BTreeMap<String, Fields>, BTreeSet<String>)> {
-        self.record_statuses(root, files(&root.join("Records"), false)?)
+        self.record_statuses(root, records(root)?)
     }
 
     fn record_statuses(
@@ -535,7 +551,7 @@ impl Store {
         let mut inline = BTreeMap::new();
         let mut unreadable = BTreeMap::new();
         for p in records {
-            let id = stem(&p);
+            let id = record_id(&p)?.to_owned();
             if approvals.contains_key(&id) || !io::file(&p)? {
                 continue;
             }
@@ -596,7 +612,10 @@ impl Store {
         if forgotten(root, id)? {
             return Ok(StoredRecord::Missing);
         }
-        let fields = match io::read(&record(root, id)) {
+        let Some(path) = find_record(root, id)? else {
+            return Ok(StoredRecord::Missing);
+        };
+        let fields = match io::read(&path) {
             Ok(Some(raw)) => fmt::parse(&raw, id, MEMORY, true),
             Ok(None) => return Ok(StoredRecord::Missing),
             Err(e) if invalid_file_contents(&e) => Err(e),
@@ -731,8 +750,8 @@ impl Store {
         let root = self.root(b)?;
         let (a, h) = self.statuses(&root)?;
         let mut entries = Vec::new();
-        for p in files(&root.join("Records"), false)? {
-            let id = stem(&p);
+        for p in records(&root)? {
+            let id = record_id(&p)?.to_owned();
             if !a.contains_key(&id) && !h.contains(&id) {
                 match self.read_public_record(&root, &id, None)? {
                     StoredRecord::Loaded(record) => entries.push(record),
@@ -757,7 +776,7 @@ impl Store {
         h: &BTreeSet<String>,
     ) -> Result<()> {
         if let Some(p) = f.get("supersedes") {
-            if !a.contains_key(p) || h.contains(p) || !io::file(&record(root, p))? {
+            if !a.contains_key(p) || h.contains(p) || find_record(root, p)?.is_none() {
                 return Err("Superseded memory entry is unavailable".into());
             }
         }
@@ -811,13 +830,13 @@ impl Store {
                 provenance.insert(k.into(), fmt::safe(&json!(v), 128, false)?);
             }
         }
-        let path = record(root, &id);
+        let path = find_record(root, &id)?;
         let (a, h) = self.statuses(root)?;
         if h.contains(&id) {
             return Err("Memory entry is unavailable".into());
         }
         let approved = approved && b.mode == "auto";
-        if !a.contains_key(&id) && !io::file(&path)? {
+        if !a.contains_key(&id) && path.is_none() {
             self.check_supersedes(root, fields, &a, &h)?;
             let mut metadata = fields.clone();
             metadata.remove("body");
@@ -827,7 +846,7 @@ impl Store {
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
             );
             metadata.extend(provenance);
-            for (k, v) in graph(root, fields.get("supersedes"), Some(link)) {
+            for (k, v) in graph(root, fields.get("supersedes"), Some(link))? {
                 if let Some(v) = v {
                     metadata.insert(k, v);
                 }
@@ -835,12 +854,16 @@ impl Store {
             if approved {
                 metadata.insert("fstack_status".into(), "approved".into());
             }
+            let path = new_record(root, &id, &fields["title"])?;
             if io::write(
                 &path,
                 &fmt::markdown(MEMORY, &metadata, &fields["body"]),
                 false,
                 None,
             )? {
+                if record(root, &id)? != path {
+                    return Err(NOTE_CHANGED.into());
+                }
                 if verified_forgotten(root, &id)? {
                     self.forget_locked(root, &id, None)?;
                     return Ok(WriteOutcome::Forgotten);
@@ -895,7 +918,7 @@ impl Store {
         if h.contains(id) {
             return Err("Memory entry is unavailable".into());
         }
-        let p = record(root, id);
+        let p = record(root, id)?;
         let raw = io::read(&p)?;
         if verified_forgotten(root, id)? {
             return Ok(WriteOutcome::Forgotten);
@@ -915,7 +938,7 @@ impl Store {
                 fmt::approval(&fields)
             }
         };
-        let mut updates = graph(root, approval.get("supersedes"), Some(link));
+        let mut updates = graph(root, approval.get("supersedes"), Some(link))?;
         updates.insert("fstack_status".into(), Some("approved".into()));
         updates.insert("supersedes".into(), approval.get("supersedes").cloned());
         let written = update(&p, &raw, &fields, &updates)?;
@@ -963,6 +986,7 @@ impl Store {
             check_note_snapshot(io::read(&path)?.as_deref(), expected)?;
         }
         io::delete(&path)?;
+        io::sync_parent(&path)?;
         Ok(())
     }
     pub(crate) fn forget_locked(
@@ -973,15 +997,20 @@ impl Store {
     ) -> Result<Value> {
         let (raw, c, l) = read_tombstones(root, id)?;
         let marker = legacy(root, "Approved", id);
-        let record = record(root, id);
+        let record = find_record(root, id)?;
         let captured = captured(root, id);
         if let Some(expected) = &expected {
-            check_note_snapshot(io::read(&record)?.as_deref(), expected.record)?;
+            let raw = record.as_deref().map(io::read).transpose()?.flatten();
+            check_note_snapshot(raw.as_deref(), expected.record)?;
             check_note_snapshot(io::read(&captured)?.as_deref(), expected.captured)?;
             check_note_snapshot(io::read(&marker)?.as_deref(), expected.approval_marker)?;
         }
         let has_marker = io::file(&marker)?;
-        let has_record = io::file(&record)?;
+        let has_record = record
+            .as_deref()
+            .map(io::file)
+            .transpose()?
+            .unwrap_or(false);
         let approval = if let Some(snapshot) = &expected {
             snapshot.approval(id)?
         } else if has_marker {
@@ -999,7 +1028,10 @@ impl Store {
                     let a = if expected.is_some() {
                         approval.clone()
                     } else {
-                        find_approval(approval.clone(), &[captured.clone(), record.clone()], id)?
+                        let paths = std::iter::once(captured.clone())
+                            .chain(record.clone())
+                            .collect::<Vec<_>>();
+                        find_approval(approval.clone(), &paths, id)?
                     };
                     tomb_fields(id, a.as_ref())
                 }
@@ -1012,6 +1044,10 @@ impl Store {
             approval.as_ref(),
             expected.as_ref().map(|snapshot| snapshot.captured),
         )?;
+        let Some(record) = record else {
+            remove_empty_record_directory(root, id);
+            return Ok(json!({"id":id,"status":"forgotten"}));
+        };
         if let Some(expected) = &expected {
             check_note_snapshot(io::read(&record)?.as_deref(), expected.record)?;
         }
@@ -1034,6 +1070,7 @@ impl Store {
             }
         }
         io::sync_parent(&record)?;
+        remove_empty_record_directory(root, id);
         Ok(json!({"id":id,"status":"forgotten"}))
     }
     pub fn search(&self, b: &Binding, query: &str, limit: usize) -> Result<Value> {
